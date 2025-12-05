@@ -18,13 +18,13 @@ class YandexParser(BaseParser):
         super().__init__(headless)
         self.start_time = None
         self.all_parking_urls: Set[str] = set()
-        self.max_scroll_attempts_without_new = 5  # Максимум попыток без новых URL
+        self.max_consecutive_no_new = 3  # Максимум 3 попытки без новых URL
 
     @property
     def source_name(self) -> str:
         return "yandex"
 
-    async def parse(self, max_scrolls: int = 50, max_parkings: int = 200) -> List[Dict[str, Any]]:
+    async def parse(self) -> List[Dict[str, Any]]:
         """Основной метод парсинга Яндекс Карт"""
         print("=" * 60)
         print("🚀 ЗАПУСК ПАРСЕРА ЯНДЕКС КАРТ")
@@ -46,44 +46,51 @@ class YandexParser(BaseParser):
             print(f"🔗 URL: {search_url}")
 
             page = await self.browser.get(search_url)
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
 
             # Кликаем кнопку "Показать результаты"
             button = await page.query_selector('span.search-command-view__show-results-button')
             if button:
                 print("✅ Кнопка найдена, кликаем...")
                 await button.click()
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)
                 print("✅ Результаты загружены")
             else:
                 print("⚠️ Кнопка не найдена, проверяем есть ли результаты...")
 
-            # 2. Собираем ВСЕ ссылки с использованием скроллинга
-            print("\n📜 СБОР ВСЕХ ССЫЛОК СО СКРОЛЛИНГОМ")
+            # 2. Ждем загрузки данных
+            print("\n⏱ ОЖИДАНИЕ ЗАГРУЗКИ ДАННЫХ")
+            print("-" * 50)
+            await asyncio.sleep(5)
+
+            # 3. Собираем ссылки со скроллингом
+            print("\n🔗 СБОР ССЫЛОК СО СКРОЛЛИНГОМ")
             print("-" * 50)
 
-            await self._collect_all_urls_with_scrolling(page, max_scrolls)
+            # Сначала собираем ссылки без скроллинга
+            html_content = await page.evaluate("document.documentElement.outerHTML")
+            self._extract_urls_from_html(html_content)
+
+            # Затем выполняем скроллинг и собираем больше ссылок
+            await self._scroll_and_collect_urls(page)
 
             if not self.all_parking_urls:
                 print("❌ Не удалось собрать ссылки")
                 return []
 
-            print(f"\n✅ Собрано уникальных ссылок: {len(self.all_parking_urls)}")
+            print(f"✅ Собрано уникальных ссылок: {len(self.all_parking_urls)}")
 
-            # Сохраняем список URL для отладки
-            self._save_urls_list()
-
-            # 3. Парсим каждую парковку (ограничиваем количество)
+            # 4. Парсим ВСЕ парковки
             print("\n🏢 ДЕТАЛЬНЫЙ ПАРСИНГ ПАРКОВОК")
             print("-" * 50)
 
-            urls_to_parse = list(self.all_parking_urls)[:max_parkings]
+            urls_to_parse = list(self.all_parking_urls)
             print(f"📊 Будем парсить {len(urls_to_parse)} парковок")
 
             await self._parse_all_parking_pages(urls_to_parse)
 
-            # 4. Выводим статистику
-            self._print_final_stats(urls_to_parse)
+            # 5. Выводим статистику
+            self._print_final_stats()
 
             return self.results
 
@@ -95,446 +102,240 @@ class YandexParser(BaseParser):
         finally:
             await self.close()
 
-    async def _collect_all_urls_with_scrolling(self, page, max_scrolls: int):
-        """Сбор всех ссылок с использованием скроллинга"""
-        print("Начинаем сбор ссылок со скроллингом...")
+    async def _scroll_and_collect_urls(self, page):
+        """Скроллинг панели результатов и сбор ссылок"""
+        print("Начинаем скроллинг для загрузки всех парковок...")
 
-        # Дебаг структуры страницы
-        await self._debug_page_structure(page)
+        max_scroll_attempts = 100
+        consecutive_no_new = 0
+        total_new_urls = 0
+        last_new_urls_count = 0
 
-        scroll_attempt = 0
-        attempts_without_new_urls = 0
+        for attempt in range(1, max_scroll_attempts + 1):
+            print(f"\n   🔄 Попытка скроллинга {attempt}/{max_scroll_attempts}")
 
-        while scroll_attempt < max_scrolls and attempts_without_new_urls < self.max_scroll_attempts_without_new:
-            scroll_attempt += 1
-            print(f"\n   🔄 Попытка {scroll_attempt}/{max_scrolls}")
+            # Сохраняем количество URL до скроллинга
+            before_scroll_count = len(self.all_parking_urls)
 
-            # Собираем ссылки с текущей страницы
-            current_urls = await self._extract_all_urls_from_page(page)
-            previous_count = len(self.all_parking_urls)
-            self.all_parking_urls.update(current_urls)
-            current_count = len(self.all_parking_urls)
-            new_urls = current_count - previous_count
+            # Агрессивный скроллинг с фокусом на Яндекс.Карты
+            await self._yandex_specific_scroll(page)
 
-            print(f"   📎 Всего URL: {current_count} (+{new_urls} новых)")
+            # Ждем загрузки новых результатов (уменьшим время ожидания)
+            wait_time = random.uniform(2, 3)
+            print(f"   ⏱ Ждем {wait_time:.1f} сек...")
+            await asyncio.sleep(wait_time)
+
+            # Получаем обновленный HTML
+            html_content = await page.evaluate("document.documentElement.outerHTML")
+
+            # Извлекаем новые URL
+            new_urls_count_before = len(self.all_parking_urls)
+            self._extract_urls_from_html(html_content)
+            new_urls_count_after = len(self.all_parking_urls)
+            new_urls_added = new_urls_count_after - new_urls_count_before
+
+            print(f"   📊 URL до: {before_scroll_count}, добавлено: {new_urls_added}, всего: {new_urls_count_after}")
 
             # Проверяем, есть ли новые URL
-            if new_urls > 0:
-                attempts_without_new_urls = 0
-                print(f"   ✅ Найдено {new_urls} новых URL")
-            else:
-                attempts_without_new_urls += 1
-                print(
-                    f"   ⚠ Новых URL нет (попыток: {attempts_without_new_urls}/{self.max_scroll_attempts_without_new})")
+            if new_urls_added > 0:
+                consecutive_no_new = 0
+                total_new_urls += new_urls_added
+                last_new_urls_count = new_urls_added
+                print(f"   ✅ Добавилось {new_urls_added} новых URL")
 
-            # Если слишком долго нет новых URL, останавливаемся
-            if attempts_without_new_urls >= self.max_scroll_attempts_without_new:
-                print("   🏁 Прекращаем - слишком долго нет новых URL")
+                # Если добавлено мало URL, возможно конец близок
+                if new_urls_added < 5:
+                    print(f"   ⚠ Мало новых URL ({new_urls_added}), возможно скоро конец")
+            else:
+                consecutive_no_new += 1
+                print(f"   ⚠ Новых URL нет (попыток без новых: {consecutive_no_new}/{self.max_consecutive_no_new})")
+
+                # Если 3 раза подряд нет новых URL - завершаем
+                if consecutive_no_new >= self.max_consecutive_no_new:
+                    print(f"   🏁 Прекращаем скроллинг - {self.max_consecutive_no_new} раза подряд нет новых URL")
+                    break
+
+            # Быстрая проверка конца (без долгого JavaScript)
+            is_end = await self._quick_check_end(page)
+            if is_end:
+                print("   🏁 Быстрая проверка: достигнут конец списка")
                 break
 
-            # Прокручиваем разными способами
-            await self._perform_scroll_actions(page)
+            # Если за последние 2 попытки добавилось мало URL, возможно конец
+            if attempt > 2 and last_new_urls_count < 3:
+                print(f"   ⚠ В последней попытке мало новых URL ({last_new_urls_count}), проверяем конец...")
+                is_loading = await self._check_if_loading(page)
+                if not is_loading:
+                    print("   🏁 Загрузка не активна и мало новых URL - завершаем")
+                    break
 
-            # Ждем загрузки новых результатов
-            await asyncio.sleep(random.uniform(3, 5))
+            # Небольшая задержка между скроллами
+            await asyncio.sleep(random.uniform(0.5, 1.5))
 
-            # Периодически сохраняем прогресс
-            if scroll_attempt % 5 == 0:
-                print(f"   💾 Промежуточный результат: {current_count} ссылок")
+        print(f"\n✅ Скроллинг завершен после {min(attempt, max_scroll_attempts)} попыток")
+        print(f"📊 Всего добавлено новых URL: {total_new_urls}")
+        print(f"📊 Итоговое количество ссылок: {len(self.all_parking_urls)}")
 
-        print(f"\n✅ Сбор ссылок завершен после {scroll_attempt} попыток")
-        print(f"📊 Всего собрано уникальных URL: {len(self.all_parking_urls)}")
-
-    async def _perform_scroll_actions(self, page):
-        """Выполнение различных действий скроллинга"""
+    async def _yandex_specific_scroll(self, page):
+        """Специфичный скроллинг для Яндекс.Карт"""
         try:
-            print("   🎯 Пробуем разные методы скроллинга...")
-
-            # Способ 1: Ищем кнопки с текстом "Показать ещё", "Ещё", "Загрузить ещё"
-            show_more_texts = ['показать', 'еще', 'ещё', 'загрузить', 'show more', 'load more']
-
-            all_buttons = await page.query_selector_all('button, [role="button"], [class*="button"], [class*="btn"]')
-
-            clicked = False
-            for button in all_buttons:
-                try:
-                    button_text = await button.text()
-                    if button_text:
-                        button_text_lower = button_text.lower()
-                        if any(text in button_text_lower for text in show_more_texts):
-                            print(f"   🖱️ Найдена кнопка: '{button_text}', кликаем...")
-                            await button.click()
-                            await asyncio.sleep(3)
-                            clicked = True
-                            break
-                except:
-                    continue
-
-            if clicked:
-                return
-
-            # Способ 2: Используем JavaScript для поиска и клика по кнопкам
-            print("   📜 Используем JavaScript для поиска кнопок...")
-
-            scroll_result = await page.evaluate("""
-                (function() {
-                    let clicked = false;
-
-                    // Ищем все элементы, которые могут быть кнопками
-                    const possibleButtons = document.querySelectorAll('button, [role="button"], [class*="button"], [class*="btn"], [onclick]');
-                    const showMoreKeywords = ['показать', 'еще', 'ещё', 'загрузить', 'show', 'more', 'load'];
-
-                    for (const element of possibleButtons) {
-                        const text = (element.textContent || element.innerText || '').toLowerCase().trim();
-                        const title = (element.getAttribute('title') || '').toLowerCase();
-                        const ariaLabel = (element.getAttribute('aria-label') || '').toLowerCase();
-
-                        // Проверяем, содержит ли элемент ключевые слова
-                        const allText = text + ' ' + title + ' ' + ariaLabel;
-
-                        if (showMoreKeywords.some(keyword => allText.includes(keyword))) {
-                            console.log(`Найдена кнопка: ${text}`);
-                            element.click();
-                            clicked = true;
-                            break;
-                        }
-                    }
-
-                    // Если не нашли кнопку, пробуем прокрутить
-                    if (!clicked) {
-                        // Прокручиваем разные контейнеры
-                        const containers = [
-                            document.querySelector('.sidebar-view__panel'),
-                            document.querySelector('.scroll__container'),
-                            document.querySelector('.search-list-view__list-container'),
-                            document.body
-                        ].filter(c => c);
-
-                        for (const container of containers) {
-                            const oldScroll = container.scrollTop || window.pageYOffset;
-                            const scrollAmount = 1000;
-
-                            if (container === document.body) {
-                                window.scrollBy(0, scrollAmount);
-                            } else {
-                                container.scrollTop += scrollAmount;
-                            }
-
-                            console.log(`Прокручен ${container === document.body ? 'window' : 'container'} на ${scrollAmount}px`);
-                            break;
-                        }
-                    }
-
-                    return { clicked: clicked };
-                })();
-            """)
-
-            if scroll_result.get('clicked'):
-                print("   ✅ Выполнен клик через JavaScript")
-            else:
-                print("   📜 Выполнена прокрутка через JavaScript")
-
-            # Способ 3: Имитация действий пользователя
-            print("   👤 Имитируем действия пользователя...")
-            await self._emulate_user_scrolling(page)
-
-            # Ждем немного после всех действий
-            await asyncio.sleep(2)
-
-        except Exception as e:
-            print(f"   ⚠ Ошибка при скроллинге: {e}")
-
-    async def _emulate_user_scrolling(self, page):
-        """Имитация действий пользователя для загрузки контента"""
-        try:
-            # 1. Прокрутка вниз
+            # Пробуем найти и скроллить основной контейнер
             await page.evaluate("""
-                // Прокручиваем окно вниз
-                window.scrollTo(0, document.body.scrollHeight);
-
-                // Также пробуем прокрутить возможные контейнеры
-                const containers = [
-                    '.sidebar-view__panel',
-                    '.scroll__container',
-                    '.search-list-view__list-container',
-                    '.scrollable-container',
-                    '.search-list-view__list'
-                ];
-
-                containers.forEach(selector => {
-                    const container = document.querySelector(selector);
-                    if (container && container.scrollHeight > container.clientHeight) {
-                        container.scrollTop = container.scrollHeight;
-                    }
-                });
-            """)
-            await asyncio.sleep(1)
-
-            # 2. Небольшая прокрутка вверх и вниз
-            await page.evaluate("window.scrollBy(0, -200)")
-            await asyncio.sleep(0.5)
-            await page.evaluate("window.scrollBy(0, 400)")
-            await asyncio.sleep(0.5)
-
-            # 3. Имитируем движение мыши
-            await page.evaluate("""
-                // Движение мыши по экрану
-                const moveEvent = new MouseEvent('mousemove', {
-                    clientX: window.innerWidth / 2,
-                    clientY: window.innerHeight / 2,
-                    bubbles: true
-                });
-                document.dispatchEvent(moveEvent);
-
-                // Клик в центре экрана
-                const clickEvent = new MouseEvent('click', {
-                    clientX: window.innerWidth / 2,
-                    clientY: window.innerHeight / 2,
-                    bubbles: true
-                });
-                document.dispatchEvent(clickEvent);
-            """)
-
-            await asyncio.sleep(1)
-
-            print("   📜 Выполнена имитация действий пользователя")
-
-        except Exception as e:
-            print(f"   ⚠ Ошибка имитации действий: {e}")
-
-    async def _scroll_with_javascript(self, page):
-        """Скроллинг с использованием JavaScript"""
-        try:
-            # Пробуем найти и прокрутить элементы с результатами
-            scroll_result = await page.evaluate("""
                 (function() {
+                    // Ищем основной контейнер
+                    const selectors = [
+                        '.scroll__container_width_narrow',
+                        '.scroll__container',
+                        '.sidebar-view__panel',
+                        '.search-list-view__list-container',
+                        '.search-list-view__list'
+                    ];
+
                     let scrolled = false;
 
-                    // 1. Ищем карточки результатов
-                    const resultCards = document.querySelectorAll('.search-snippet-view, .search-list-view__list-item');
-                    if (resultCards.length > 0) {
-                        // Прокручиваем к последней карточке
-                        const lastCard = resultCards[resultCards.length - 1];
-                        lastCard.scrollIntoView({ behavior: 'smooth', block: 'end' });
-                        scrolled = true;
-                    }
+                    for (const selector of selectors) {
+                        const container = document.querySelector(selector);
+                        if (container && container.scrollHeight > container.clientHeight) {
+                            const oldScroll = container.scrollTop;
+                            container.scrollTop = container.scrollHeight;
 
-                    // 2. Ищем кнопки загрузки
-                    const loadButtons = document.querySelectorAll('button, [role="button"], [class*="button"]');
-                    for (const button of loadButtons) {
-                        const text = button.textContent || button.innerText || '';
-                        if (text.toLowerCase().includes('показать') || 
-                            text.toLowerCase().includes('еще') ||
-                            text.toLowerCase().includes('загрузить')) {
-                            button.click();
-                            scrolled = true;
-                            break;
+                            // Пробуем плавный скроллинг
+                            setTimeout(() => {
+                                container.scrollTo({
+                                    top: container.scrollHeight,
+                                    behavior: 'smooth'
+                                });
+                            }, 100);
+
+                            scrolled = container.scrollTop > oldScroll;
+                            if (scrolled) {
+                                console.log('Скроллен контейнер:', selector);
+                                break;
+                            }
                         }
                     }
 
-                    // 3. Ищем элементы пагинации
-                    const pagination = document.querySelector('.pagination, .pager, [class*="page"]');
-                    if (pagination) {
-                        const nextButton = pagination.querySelector('[rel="next"], .next, [class*="next"]');
-                        if (nextButton) {
-                            nextButton.click();
-                            scrolled = true;
-                        }
-                    }
+                    // Всегда скроллим окно
+                    const oldWindowScroll = window.pageYOffset;
+                    window.scrollBy({
+                        top: 800,
+                        behavior: 'smooth'
+                    });
 
-                    return { success: true, scrolled: scrolled, elementsFound: resultCards.length };
+                    return {
+                        containerScrolled: scrolled,
+                        windowScrolled: window.pageYOffset > oldWindowScroll
+                    };
                 })();
             """)
 
-            if scroll_result.get('success'):
-                print(f"   📜 Найдено {scroll_result['elementsFound']} элементов")
-                if scroll_result['scrolled']:
-                    print("   ✅ Выполнен скроллинг через JavaScript")
-                else:
-                    print("   ⚠ Скроллинг не выполнен")
-
         except Exception as e:
-            print(f"   ⚠ Ошибка JavaScript скроллинга: {e}")
+            print(f"   ⚠ Ошибка скроллинга: {e}")
 
-    async def _extract_all_urls_from_page(self, page) -> Set[str]:
-        """Извлечение ВСЕХ URL парковок с текущей страницы"""
+    async def _quick_check_end(self, page):
+        """Быстрая проверка конца списка"""
         try:
-            # Используем более агрессивный поиск URL
-            urls = await page.evaluate("""
+            result = await page.evaluate("""
                 (function() {
-                    const urls = new Set();
+                    // Быстрая проверка по тексту
+                    const bodyText = document.body.innerText.toLowerCase();
+                    const endKeywords = [
+                        'показаны все',
+                        'больше нет',
+                        'конец списка',
+                        'all results shown',
+                        'no more results'
+                    ];
 
-                    // 1. Ищем все ссылки на организации
-                    const allLinks = document.querySelectorAll('a[href*="/org/"]');
-                    console.log(`Найдено ссылок /org/: ${allLinks.length}`);
-
-                    for (const link of allLinks) {
-                        let href = link.getAttribute('href');
-                        if (href) {
-                            // Формируем полный URL
-                            if (href.startsWith('/')) {
-                                href = 'https://yandex.ru' + href;
-                            } else if (href.startsWith('./')) {
-                                href = 'https://yandex.ru' + href.substring(1);
-                            }
-
-                            // Очищаем URL
-                            const cleanUrl = href.split('?')[0].split('#')[0];
-
-                            // Фильтруем системные ссылки
-                            if (!cleanUrl.includes('/reviews/') && 
-                                !cleanUrl.includes('/photos/') && 
-                                !cleanUrl.includes('/gallery/')) {
-                                urls.add(cleanUrl);
-                            }
+                    for (const keyword of endKeywords) {
+                        if (bodyText.includes(keyword)) {
+                            return true;
                         }
                     }
 
-                    // 2. Ищем в data-атрибутах
-                    const elementsWithId = document.querySelectorAll('[data-id], [data-bem]');
-                    console.log(`Найдено элементов с data-id/data-bem: ${elementsWithId.length}`);
-
-                    for (const element of elementsWithId) {
-                        const dataId = element.getAttribute('data-id') || '';
-                        const dataBem = element.getAttribute('data-bem') || '';
-
-                        // Ищем ID организации
-                        const idMatch = dataId.match(/id(\\d+)/) || dataBem.match(/"id":"(\\d+)"/);
-                        if (idMatch) {
-                            const orgId = idMatch[1];
-                            urls.add(`https://yandex.ru/maps/org/${orgId}/`);
-                        }
-                    }
-
-                    // 3. Ищем в тексте страницы
-                    const pageText = document.body.innerText;
-                    const orgPattern = /yandex\\.ru\\/maps\\/org\\/[^\\s)]+/g;
-                    const matches = pageText.match(orgPattern);
-                    if (matches) {
-                        console.log(`Найдено URL в тексте: ${matches.length}`);
-                        matches.forEach(match => {
-                            const cleanUrl = match.split('?')[0].split('#')[0];
-                            urls.add(cleanUrl.startsWith('http') ? cleanUrl : 'https://' + cleanUrl);
-                        });
-                    }
-
-                    // 4. Ищем элементы с координатами (часто это карточки парковок)
-                    const coordElements = document.querySelectorAll('[data-coordinates]');
-                    console.log(`Найдено элементов с координатами: ${coordElements.length}`);
-
-                    for (const element of coordElements) {
-                        // Ищем ближайшую ссылку
-                        const link = element.closest('a[href*="/org/"]') || element.querySelector('a[href*="/org/"]');
-                        if (link) {
-                            let href = link.getAttribute('href');
-                            if (href) {
-                                if (href.startsWith('/')) {
-                                    href = 'https://yandex.ru' + href;
-                                }
-                                const cleanUrl = href.split('?')[0].split('#')[0];
-                                if (!cleanUrl.includes('/reviews/') && 
-                                    !cleanUrl.includes('/photos/') && 
-                                    !cleanUrl.includes('/gallery/')) {
-                                    urls.add(cleanUrl);
-                                }
-                            }
-                        }
-                    }
-
-                    // 5. Ищем карточки результатов
-                    const snippetElements = document.querySelectorAll('.search-snippet-view, .search-list-view__list-item');
-                    console.log(`Найдено карточек результатов: ${snippetElements.length}`);
-
-                    for (const element of snippetElements) {
-                        const link = element.querySelector('a[href*="/org/"]');
-                        if (link) {
-                            let href = link.getAttribute('href');
-                            if (href) {
-                                if (href.startsWith('/')) {
-                                    href = 'https://yandex.ru' + href;
-                                }
-                                const cleanUrl = href.split('?')[0].split('#')[0];
-                                if (!cleanUrl.includes('/reviews/') && 
-                                    !cleanUrl.includes('/photos/') && 
-                                    !cleanUrl.includes('/gallery/')) {
-                                    urls.add(cleanUrl);
-                                }
-                            }
-                        }
-                    }
-
-                    console.log(`Всего найдено уникальных URL: ${urls.size}`);
-                    return Array.from(urls);
+                    return false;
                 })();
             """)
 
-            # Конвертируем список в set (исправляем ошибку)
-            url_set = set(urls) if urls else set()
-
-            # Фильтруем только URL парковок
-            filtered_urls = {url for url in url_set if self._is_parking_url(url)}
-
-            print(f"   🔍 Найдено {len(filtered_urls)} URL парковок")
-
-            # Для дебага выводим первые 5 URL
-            if filtered_urls:
-                print(f"   📋 Примеры URL:")
-                for i, url in enumerate(list(filtered_urls)[:3]):
-                    print(f"      {i + 1}. {self._shorten_url(url, 70)}")
-
-            return filtered_urls
+            return bool(result)
 
         except Exception as e:
-            print(f"   ⚠ Ошибка извлечения URL: {e}")
+            return False
+
+    async def _check_if_loading(self, page):
+        """Проверяем, идет ли загрузка данных"""
+        try:
+            result = await page.evaluate("""
+                (function() {
+                    // Быстрая проверка спиннеров
+                    const spinners = document.querySelectorAll('.spin2, .spinner, .loading, .loader');
+                    for (const spinner of spinners) {
+                        const style = getComputedStyle(spinner);
+                        if (style.display !== 'none' && style.visibility !== 'hidden') {
+                            return true;
+                        }
+                    }
+                    return false;
+                })();
+            """)
+
+            return bool(result)
+
+        except Exception as e:
+            print(f"   ⚠ Ошибка проверки загрузки: {e}")
+            return False
+
+    def _extract_urls_from_html(self, html_content: str):
+        """Извлечение ссылок на парковки из HTML"""
+        try:
+            # Паттерны для поиска
+            org_pattern = r'href="(/maps/org/[^"]+)"'
+            snippet_pattern = r'<li[^>]*class="[^"]*search-snippet-view[^"]*"[^>]*>.*?</li>'
+
+            # Ищем карточки
+            snippets = re.findall(snippet_pattern, html_content, re.DOTALL)
+
+            urls_before = len(self.all_parking_urls)
+
+            for snippet in snippets:
+                # Ищем ссылку
+                link_match = re.search(org_pattern, snippet)
+                if link_match:
+                    link = link_match.group(1)
+                    if link:
+                        full_url = f"https://yandex.ru{link}"
+                        # Очищаем URL от параметров
+                        clean_url = full_url.split('?')[0].split('#')[0]
+                        # Фильтруем системные ссылки
+                        if not any(exclude in clean_url.lower() for exclude in ['/reviews/', '/photos/', '/gallery/']):
+                            self.all_parking_urls.add(clean_url)
+
+            # Дополнительный поиск ссылок во всем HTML
+            all_link_matches = re.findall(r'href="(/maps/org/[^/"]+/[^/"]*)"', html_content)
+            for link in all_link_matches:
+                full_url = f"https://yandex.ru{link}"
+                clean_url = full_url.split('?')[0].split('#')[0]
+                if not any(exclude in clean_url.lower() for exclude in ['/reviews/', '/photos/', '/gallery/']):
+                    self.all_parking_urls.add(clean_url)
+
+            urls_after = len(self.all_parking_urls)
+            new_urls = urls_after - urls_before
+
+            if new_urls > 0:
+                print(f"   ✅ Извлечено {new_urls} новых URL")
+
+        except Exception as e:
+            print(f"❌ Ошибка извлечения URL: {e}")
             import traceback
             traceback.print_exc()
-            return set()
 
-    def _is_parking_url(self, url: str) -> bool:
-        """Проверка, является ли URL ссылкой на парковку"""
-        # Ключевые слова в URL, указывающие на парковку
-        parking_keywords = [
-            'parkovka',
-            'parking',
-            'avtoparkovka',
-            'avtomobilnaya_parkovka',
-            'sto',  # СТО часто имеют парковки
-            'parking_lot',
-            'car_park'
-        ]
+    # УДАЛИМ НЕНУЖНЫЕ МЕТОДЫ:
+    # - _aggressive_yandex_scroll (слишко сложный)
+    # - _fallback_scroll (упростим)
+    # - _check_end_of_results (слишком сложный, заменим на быстрый)
 
-        url_lower = url.lower()
+    # ОСТАВИМ ТОЛЬКО РАБОЧИЕ МЕТОДЫ:
 
-        # Проверяем ключевые слова
-        for keyword in parking_keywords:
-            if keyword in url_lower:
-                return True
-
-        # Если URL содержит /org/, считаем что это организация (возможно парковка)
-        if '/org/' in url_lower:
-            # Исключаем явно не парковочные URL
-            non_parking = ['/reviews/', '/photos/', '/gallery/', '/attraction/', '/hotel/']
-            if not any(np in url_lower for np in non_parking):
-                return True
-
-        return False
-
-    def _save_urls_list(self):
-        """Сохранение списка URL для отладки"""
-        try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"yandex_urls_{timestamp}.txt"
-
-            with open(filename, 'w', encoding='utf-8') as f:
-                for url in sorted(self.all_parking_urls):
-                    f.write(f"{url}\n")
-
-            print(f"💾 Список URL сохранен в {filename}")
-
-        except Exception as e:
-            print(f"⚠ Ошибка сохранения URL: {e}")
-
-    # Остальные методы остаются без изменений (они уже рабочие)
     async def _parse_all_parking_pages(self, urls: List[str]):
         """Парсинг всех страниц парковок"""
         total = len(urls)
@@ -575,7 +376,7 @@ class YandexParser(BaseParser):
                 await asyncio.sleep(delay)
 
             # Выводим прогресс
-            if i % 5 == 0 or i == total:
+            if i % 10 == 0 or i == total:
                 progress = (i / total) * 100
                 elapsed = time.time() - self.start_time
                 print(f"\n📊 Прогресс: {i}/{total} ({progress:.1f}%)")
@@ -584,6 +385,9 @@ class YandexParser(BaseParser):
 
         print(f"\n🎉 Парсинг завершен!")
         print(f"📊 Итог: Успешно {success}, Ошибок {failed}")
+
+    # Остальные методы (parse_single_parking_page, extract_parking_data и т.д.)
+    # остаются без изменений, так как они работают
 
     async def _parse_single_parking_page(self, url: str) -> Optional[Dict[str, Any]]:
         """Парсинг одной страницы парковки"""
@@ -882,7 +686,7 @@ class YandexParser(BaseParser):
             return url
         return url[:max_length - 3] + "..."
 
-    def _print_final_stats(self, urls_to_parse: List[str]):
+    def _print_final_stats(self):
         """Вывод финальной статистики"""
         print("\n" + "=" * 60)
         print("📊 ФИНАЛЬНАЯ СТАТИСТИКА ЯНДЕКС КАРТ")
@@ -894,11 +698,10 @@ class YandexParser(BaseParser):
 
         print(f"⏱ Общее время: {minutes} мин {seconds} сек")
         print(f"🔗 Всего ссылок собрано: {len(self.all_parking_urls)}")
-        print(f"🔗 Парсилось: {len(urls_to_parse)}")
         print(f"✅ Успешно распарсено: {len(self.results)}")
 
-        if urls_to_parse:
-            success_rate = (len(self.results) / len(urls_to_parse)) * 100
+        if self.all_parking_urls:
+            success_rate = (len(self.results) / len(self.all_parking_urls)) * 100
             print(f"📈 Эффективность парсинга: {success_rate:.1f}%")
 
         if self.results:
@@ -935,122 +738,28 @@ class YandexParser(BaseParser):
 
         print("=" * 60)
 
-    async def _debug_page_structure(self, page):
-        """Дебаг структуры страницы"""
-        print("\n🔍 ДЕБАГ СТРУКТУРЫ СТРАНИЦЫ:")
-        print("-" * 40)
-
-        try:
-            structure = await page.evaluate("""
-                (function() {
-                    const results = {};
-
-                    // 1. Проверяем основные контейнеры
-                    const containers = [
-                        '.sidebar-view__panel',
-                        '.scroll__container',
-                        '.search-list-view__list-container',
-                        '.search-list-view__list',
-                        '.search-list-view__items',
-                        '.search-snippet-view',
-                        '[data-coordinates]',
-                        'a[href*="/org/"]'
-                    ];
-
-                    containers.forEach(selector => {
-                        const elements = document.querySelectorAll(selector);
-                        results[selector] = {
-                            count: elements.length,
-                            firstExists: elements.length > 0
-                        };
-
-                        // Для некоторых селекторов показываем дополнительную информацию
-                        if (elements.length > 0 && (selector.includes('panel') || selector.includes('container'))) {
-                            const firstEl = elements[0];
-                            results[selector].scrollHeight = firstEl.scrollHeight;
-                            results[selector].clientHeight = firstEl.clientHeight;
-                            results[selector].scrollable = firstEl.scrollHeight > firstEl.clientHeight;
-                        }
-                    });
-
-                    // 2. Проверяем кнопки
-                    const buttons = document.querySelectorAll('button, [role="button"]');
-                    results['buttons'] = {
-                        count: buttons.length,
-                        texts: Array.from(buttons).map(btn => btn.textContent?.trim() || btn.innerText?.trim() || '').filter(t => t)
-                    };
-
-                    // 3. Проверяем текст на странице
-                    const bodyText = document.body.innerText || '';
-                    results['textStats'] = {
-                        length: bodyText.length,
-                        containsParking: bodyText.toLowerCase().includes('парков'),
-                        containsShowMore: bodyText.toLowerCase().includes('показать') || bodyText.toLowerCase().includes('еще')
-                    };
-
-                    return results;
-                })();
-            """)
-
-            # Выводим результаты
-            print("📊 СТАТИСТИКА СТРАНИЦЫ:")
-            for selector, info in structure.items():
-                if selector == 'textStats':
-                    print(f"   📝 Текст страницы:")
-                    print(f"      Длина: {info['length']} символов")
-                    print(f"      Содержит 'парков': {info['containsParking']}")
-                    print(f"      Содержит 'показать/еще': {info['containsShowMore']}")
-                elif selector == 'buttons':
-                    print(f"   🖱️ Кнопки: {info['count']} шт.")
-                    if info['texts']:
-                        unique_texts = list(set(info['texts']))[:5]
-                        print(f"      Тексты: {', '.join(unique_texts)}")
-                else:
-                    if info['count'] > 0:
-                        print(f"   {selector}: {info['count']} элементов")
-                        if 'scrollable' in info:
-                            print(f"      Прокручиваемый: {info['scrollable']}")
-                            print(
-                                f"      Высота: {info.get('scrollHeight', 'N/A')} / {info.get('clientHeight', 'N/A')}")
-
-            print("-" * 40)
-
-        except Exception as e:
-            print(f"   ❌ Ошибка дебага: {e}")
-
 
 # Тестовый запуск
-async def test_yandex_scrolling():
-    """Тестирование парсера со скроллингом"""
-    print("🧪 ТЕСТИРУЕМ ПАРСЕР СО СКРОЛЛИНГОМ")
+async def test_yandex_parser():
+    """Тестирование парсера"""
+    print("🧪 ТЕСТИРУЕМ ПАРСЕР ЯНДЕКС КАРТ")
     parser = YandexParser(headless=False)
 
     try:
-        # Тестируем скроллинг с небольшими лимитами
-        results = await parser.parse(max_scrolls=15, max_parkings=20)
+        results = await parser.parse()
 
         print(f"\n🎉 Тест завершен! Найдено {len(results)} парковок")
 
         if results:
             # Сохраняем результаты
-            with open("yandex_scrolling_results.json", "w", encoding="utf-8") as f:
+            with open("yandex_test_results.json", "w", encoding="utf-8") as f:
                 json.dump(results, f, ensure_ascii=False, indent=2)
-            print("💾 Результаты сохранены в yandex_scrolling_results.json")
+            print("💾 Результаты сохранены в yandex_test_results.json")
 
-            # Выводим статистику по собранным URL
-            print(f"\n📊 СТАТИСТИКА ПО ССЫЛКАМ:")
+            # Выводим статистику
+            print(f"\n📊 СТАТИСТИКА:")
             print(f"   Всего ссылок собрано: {len(parser.all_parking_urls)}")
-
-            # Сохраняем список URL
-            import csv
-            with open("yandex_all_urls.csv", "w", encoding="utf-8", newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(["URL"])
-                for url in parser.all_parking_urls:
-                    writer.writerow([url])
-            print("💾 Список URL сохранен в yandex_all_urls.csv")
-
-
+            print(f"   Успешно распарсено: {len(results)}")
 
     except Exception as e:
         print(f"\n❌ Ошибка теста: {e}")
@@ -1060,98 +769,5 @@ async def test_yandex_scrolling():
         await parser.close()
 
 
-# В конце файла, перед if __name__ == "__main__":
-
-async def debug_scrolling_only():
-    """Только дебаг скроллинга без парсинга"""
-    print("🧪 ДЕБАГ СКРОЛЛИНГА ЯНДЕКС.КАРТ")
-
-    parser = YandexParser(headless=False)
-
-    try:
-        await parser.init_browser()
-
-        # Загружаем страницу поиска
-        search_url = "https://yandex.ru/maps/2/saint-petersburg/search/парковки/"
-        print(f"🔗 Загружаем: {search_url}")
-
-        page = await parser.browser.get(search_url)
-        await asyncio.sleep(5)
-
-        # Кликаем кнопку "Показать результаты"
-        button = await page.query_selector('span.search-command-view__show-results-button')
-        if button:
-            print("✅ Кликаем кнопку 'Показать результаты'...")
-            await button.click()
-            await asyncio.sleep(5)
-
-        # Делаем скриншот ДО скроллинга
-        await page.save_screenshot("debug_before_scroll.png")
-        print("💾 Скриншот ДО сохранен: debug_before_scroll.png")
-
-        # Собираем ссылки ДО скроллинга
-        print("\n📋 СБИРАЕМ ССЫЛКИ ДО СКРОЛЛИНГА:")
-        urls_before = await parser._extract_all_urls_from_page(page)
-        print(f"   Найдено ссылок: {len(urls_before)}")
-
-        # Выполняем скроллинг несколько раз
-        print("\n📜 ВЫПОЛНЯЕМ СКРОЛЛИНГ (5 попыток):")
-        for i in range(5):
-            print(f"\n   🔄 Попытка скроллинга {i + 1}/5")
-
-            # Пробуем разные методы скроллинга
-            await parser._perform_scroll_actions(page)
-
-            # Ждем загрузки
-            await asyncio.sleep(4)
-
-            # Делаем скриншот после каждой попытки
-            await page.save_screenshot(f"debug_scroll_attempt_{i + 1}.png")
-            print(f"   💾 Скриншот сохранен: debug_scroll_attempt_{i + 1}.png")
-
-            # Собираем ссылки после скроллинга
-            current_urls = await parser._extract_all_urls_from_page(page)
-            print(f"   Найдено ссылок: {len(current_urls)}")
-
-            # Сравниваем
-            new_urls = len(current_urls) - len(urls_before)
-            if new_urls > 0:
-                print(f"   ✅ Добавилось новых ссылок: +{new_urls}")
-            else:
-                print(f"   ⚠ Новых ссылок нет")
-
-        # Финальный сбор всех ссылок
-        print("\n📊 ФИНАЛЬНЫЙ СБОР ССЫЛОК:")
-        all_urls = await parser._extract_all_urls_from_page(page)
-        print(f"   Всего ссылок: {len(all_urls)}")
-
-        # Сохраняем список URL
-        with open("debug_scroll_urls.txt", "w", encoding="utf-8") as f:
-            for url in sorted(all_urls):
-                f.write(f"{url}\n")
-        print("💾 Список URL сохранен в debug_scroll_urls.txt")
-
-        print("\n🎉 Дебаг скроллинга завершен!")
-        print("📁 Проверьте файлы:")
-        print("   - debug_before_scroll.png")
-        print("   - debug_scroll_attempt_*.png")
-        print("   - debug_scroll_urls.txt")
-
-    except Exception as e:
-        print(f"\n❌ Ошибка дебага: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        await parser.close()
-
 if __name__ == "__main__":
-    print("Выберите режим:")
-    print("1. Полный парсинг (со скроллингом)")
-    print("2. Только дебаг скроллинга")
-
-    choice = input("Введите 1 или 2: ").strip()
-
-    if choice == "1":
-        asyncio.run(test_yandex_scrolling())
-    else:
-        asyncio.run(debug_scrolling_only())
+    asyncio.run(test_yandex_parser())
