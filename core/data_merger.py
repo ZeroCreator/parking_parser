@@ -1,5 +1,6 @@
+import math
 import re
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from difflib import SequenceMatcher
 
 
@@ -17,9 +18,14 @@ class DataMerger:
         self.coord_tolerance = coord_tolerance
         self.name_similarity = name_similarity
 
-    def parse_coordinates(self, coord_str: str) -> Tuple[float, float]:
+    def parse_coordinates(self, coord_str: str) -> Optional[Tuple[float, float]]:
         """Парсинг строки с координатами в числа"""
         if not coord_str:
+            return None
+
+        coord_str = str(coord_str)
+
+        if coord_str.lower() in ['nan', 'none', 'null', '']:
             return None
 
         try:
@@ -41,8 +47,16 @@ class DataMerger:
         if not coord1 or not coord2:
             return False
 
-        parsed1 = self.parse_coordinates(coord1)
-        parsed2 = self.parse_coordinates(coord2)
+        # Проверяем на NaN и другие невалидные значения
+        coord1_str = str(coord1)
+        coord2_str = str(coord2)
+
+        if not coord1_str or not coord2_str or coord1_str.lower() in ['nan', 'none', 'null'] or coord2_str.lower() in [
+            'nan', 'none', 'null']:
+            return False
+
+        parsed1 = self.parse_coordinates(coord1_str)
+        parsed2 = self.parse_coordinates(coord2_str)
 
         if not parsed1 or not parsed2:
             return False
@@ -55,10 +69,14 @@ class DataMerger:
 
         return lat_diff <= self.coord_tolerance and lon_diff <= self.coord_tolerance
 
-    def normalize_text(self, text: str) -> str:
+    def normalize_text(self, text: Any) -> str:
         """Нормализация текста для сравнения"""
-        if not text:
+        if text is None:
             return ""
+
+        # Конвертируем в строку если не строка
+        if not isinstance(text, str):
+            text = str(text)
 
         # Приводим к нижнему регистру
         text = text.lower()
@@ -74,7 +92,7 @@ class DataMerger:
 
         return ' '.join(words).strip()
 
-    def text_similarity(self, text1: str, text2: str) -> float:
+    def text_similarity(self, text1: Any, text2: Any) -> float:
         """Вычисление схожести текстов"""
         norm1 = self.normalize_text(text1)
         norm2 = self.normalize_text(text2)
@@ -84,14 +102,17 @@ class DataMerger:
 
         return SequenceMatcher(None, norm1, norm2).ratio()
 
-    def address_match(self, addr1: str, addr2: str) -> bool:
+    def address_match(self, addr1: Any, addr2: Any) -> bool:
         """Проверка совпадения адресов"""
-        if not addr1 or not addr2:
+        addr1_str = str(addr1) if addr1 is not None else ""
+        addr2_str = str(addr2) if addr2 is not None else ""
+
+        if not addr1_str or not addr2_str:
             return False
 
         # Убираем номера домов, квартир и т.д.
-        clean1 = re.sub(r'[,\d-]', '', addr1).lower().strip()
-        clean2 = re.sub(r'[,\d-]', '', addr2).lower().strip()
+        clean1 = re.sub(r'[,\d-]', '', addr1_str).lower().strip()
+        clean2 = re.sub(r'[,\d-]', '', addr2_str).lower().strip()
 
         # Сравниваем ключевые слова
         words1 = set(clean1.split())
@@ -102,15 +123,33 @@ class DataMerger:
 
     def merge_objects(self, yandex_obj: Dict[str, Any], twogis_obj: Dict[str, Any]) -> Dict[str, Any]:
         """Объединение двух объектов в один"""
+        # Проверяем что объекты не None
+        if not yandex_obj:
+            yandex_obj = {}
+        if not twogis_obj:
+            twogis_obj = {}
+
+        # Очищаем значения от None
+        def clean_value(val):
+            if val is None:
+                return ''
+            if isinstance(val, float) and math.isnan(val):
+                return ''
+            return str(val).strip()
+
         merged = {
-            'Объект': yandex_obj.get('Название объекта') or twogis_obj.get('Название объекта'),
-            'Координаты (общие)': yandex_obj.get('Координаты') or twogis_obj.get('Координаты'),
-            'Адрес (общий)': yandex_obj.get('Адрес') or twogis_obj.get('Адрес'),
-            'Телефон (общий)': yandex_obj.get('Телефон') or twogis_obj.get('Телефон'),
-            'Сайт (общий)': yandex_obj.get('Сайт') or twogis_obj.get('Сайт'),
-            'Тип объекта (общий)': yandex_obj.get('Тип объекта') or twogis_obj.get('Тип объекта'),
-            'Название парковки (общее)': yandex_obj.get('Название парковки') or twogis_obj.get('Название парковки'),
-            'Описание Яндекс': yandex_obj.get('Описание', ''),
+            'Объект': clean_value(yandex_obj.get('Название объекта')) or clean_value(
+                twogis_obj.get('Название объекта')),
+            'Координаты (общие)': clean_value(yandex_obj.get('Координаты')) or clean_value(
+                twogis_obj.get('Координаты')),
+            'Адрес (общий)': clean_value(yandex_obj.get('Адрес')) or clean_value(twogis_obj.get('Адрес')),
+            'Телефон (общий)': clean_value(yandex_obj.get('Телефон')) or clean_value(twogis_obj.get('Телефон')),
+            'Сайт (общий)': clean_value(yandex_obj.get('Сайт')) or clean_value(twogis_obj.get('Сайт')),
+            'Тип объекта (общий)': clean_value(yandex_obj.get('Тип объекта')) or clean_value(
+                twogis_obj.get('Тип объекта')),
+            'Название парковки (общее)': clean_value(yandex_obj.get('Название парковки')) or clean_value(
+                twogis_obj.get('Название парковки')),
+            'Описание Яндекс': clean_value(yandex_obj.get('Описание', '')),
             'Данные Яндекс Карт': self._format_yandex_data(yandex_obj),
             'Данные 2ГИС': self._format_twogis_data(twogis_obj),
             'Конфликт данных': '',
@@ -197,6 +236,8 @@ class DataMerger:
 
         return '\n'.join(parts)
 
+    # data_merger.py - исправляем метод _merge_numeric_data
+
     def _merge_numeric_data(self, yandex: Dict, twogis: Dict) -> Dict[str, Any]:
         """Объединение числовых и текстовых данных"""
         result = {}
@@ -229,21 +270,29 @@ class DataMerger:
         # Время работы - приоритет у Яндекс (обычно точнее)
         result['Время работы (итоговое)'] = yandex.get('Время работы') or twogis.get('Время работы') or ''
 
-        # Вместимость - берем максимальную
+        # Вместимость - берем максимальную, но только если оба числа или один не None
         cap1 = self._extract_number(yandex.get('Вместимость', ''))
         cap2 = self._extract_number(twogis.get('Вместимость', ''))
-        capacity = max(cap1, cap2) if cap1 or cap2 else None
-        result['Вместимость (итоговая)'] = str(capacity) if capacity else ''
+
+        if cap1 is not None and cap2 is not None:
+            capacity = max(cap1, cap2)
+            result['Вместимость (итоговая)'] = str(capacity)
+        elif cap1 is not None:
+            result['Вместимость (итоговая)'] = str(cap1)
+        elif cap2 is not None:
+            result['Вместимость (итоговая)'] = str(cap2)
+        else:
+            result['Вместимость (итоговая)'] = ''
 
         # Оценки - среднее арифметическое
         rating1 = self._extract_float(yandex.get('Оценка', ''))
         rating2 = self._extract_float(twogis.get('Оценка', ''))
 
-        if rating1 and rating2:
+        if rating1 is not None and rating2 is not None:
             result['Оценка (средняя)'] = f"{(rating1 + rating2) / 2:.1f}"
-        elif rating1:
+        elif rating1 is not None:
             result['Оценка (средняя)'] = str(rating1)
-        elif rating2:
+        elif rating2 is not None:
             result['Оценка (средняя)'] = str(rating2)
         else:
             result['Оценка (средняя)'] = ''
@@ -251,25 +300,39 @@ class DataMerger:
         # Количество оценок - сумма
         count1 = self._extract_number(yandex.get('Количество оценок', ''))
         count2 = self._extract_number(twogis.get('Количество оценок', ''))
-        total = (count1 or 0) + (count2 or 0)
+
+        total = 0
+        if count1 is not None:
+            total += count1
+        if count2 is not None:
+            total += count2
+
         result['Количество оценок (сумма)'] = str(total) if total > 0 else ''
 
         return result
 
-    def _extract_number(self, text: str) -> int:
+    def _extract_number(self, text: Any) -> Optional[int]:
         """Извлечение числа из текста"""
-        if not text:
+        if text is None:
             return None
 
-        match = re.search(r'(\d+)', str(text))
+        text_str = str(text)
+        if not text_str or text_str.lower() in ['nan', 'none', 'null', '']:
+            return None
+
+        match = re.search(r'(\d+)', text_str)
         return int(match.group(1)) if match else None
 
-    def _extract_float(self, text: str) -> float:
+    def _extract_float(self, text: Any) -> Optional[float]:
         """Извлечение дробного числа из текста"""
-        if not text:
+        if text is None:
             return None
 
-        match = re.search(r'(\d+\.?\d*)', str(text))
+        text_str = str(text)
+        if not text_str or text_str.lower() in ['nan', 'none', 'null', '']:
+            return None
+
+        match = re.search(r'(\d+\.?\d*)', text_str)
         return float(match.group(1)) if match else None
 
     def _find_conflicts(self, yandex: Dict, twogis: Dict) -> List[str]:
@@ -320,6 +383,8 @@ class DataMerger:
 
         return matches
 
+    # data_merger.py - в методе calculate_match_score
+
     def calculate_match_score(self, yandex_obj: Dict, twogis_obj: Dict) -> float:
         """Вычисление оценки совпадения объектов"""
         scores = []
@@ -330,12 +395,17 @@ class DataMerger:
         coord2 = twogis_obj.get('Координаты', '')
 
         if coord1 and coord2:
-            if self.coordinates_match(coord1, coord2):
-                scores.append(1.0)
-                weights.append(3.0)  # Высокий вес
-            else:
-                scores.append(0.0)
-                weights.append(3.0)
+            # Убедимся что это строки
+            coord1_str = str(coord1) if coord1 is not None else ''
+            coord2_str = str(coord2) if coord2 is not None else ''
+
+            if coord1_str and coord2_str:
+                if self.coordinates_match(coord1_str, coord2_str):
+                    scores.append(1.0)
+                    weights.append(3.0)  # Высокий вес
+                else:
+                    scores.append(0.0)
+                    weights.append(3.0)
 
         # 2. Название
         name1 = yandex_obj.get('Название объекта', '')
@@ -360,9 +430,13 @@ class DataMerger:
         phone2 = twogis_obj.get('Телефон', '')
 
         if phone1 and phone2:
+            # Конвертируем в строки
+            phone1_str = str(phone1) if phone1 is not None else ''
+            phone2_str = str(phone2) if phone2 is not None else ''
+
             # Нормализуем телефоны
-            norm1 = re.sub(r'[^\d]', '', phone1)
-            norm2 = re.sub(r'[^\d]', '', phone2)
+            norm1 = re.sub(r'[^\d]', '', phone1_str)
+            norm2 = re.sub(r'[^\d]', '', phone2_str)
 
             if norm1 and norm2:
                 # Проверяем полное совпадение или совпадение последних 7 цифр
