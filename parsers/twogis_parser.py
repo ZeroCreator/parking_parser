@@ -1,3 +1,5 @@
+"2Gis parser"
+
 import asyncio
 import random
 import time
@@ -13,7 +15,7 @@ from .base_parser import BaseParser
 
 
 class TwoGisParser(BaseParser):
-    """Парсер 2ГИС - собираем ВСЕ ссылки при прокрутке списка"""
+    """Парсер 2ГИС."""
 
     def __init__(self, headless: bool = True):
         super().__init__(headless)
@@ -30,8 +32,12 @@ class TwoGisParser(BaseParser):
     def source_name(self) -> str:
         return "2gis"
 
+    #
+    # Основной метод парсинга 2ГИС
+    #
+
     async def parse(self, max_pages: int = 30) -> List[Dict[str, Any]]:
-        """Основной метод парсинга 2ГИС"""
+        """Основной метод парсинга 2ГИС."""
         print("=" * 60)
         print("🚀 ЗАПУСК ПАРСЕРА 2ГИС")
         print("=" * 60)
@@ -43,8 +49,8 @@ class TwoGisParser(BaseParser):
             return []
 
         try:
-            # ЭТАП 1: Собираем ВСЕ ссылки при прокрутке списка
-            print(f"\n📄 ЭТАП 1: СБОР ВСЕХ ССЫЛОК ПРИ ПРОКРУТКЕ")
+            # ЭТАП 1: Собираем ВСЕ ссылки
+            print(f"\n📄 ЭТАП 1: СБОР ВСЕХ ССЫЛОК НА ПАРКОВКИ")
             print("-" * 50)
 
             await self._collect_all_parking_urls_by_scroll_simple()
@@ -53,9 +59,9 @@ class TwoGisParser(BaseParser):
                 print("❌ Не удалось собрать ссылки на парковки")
                 return []
 
-            print(f"\n✅ Собрано уникальных ссылок: {len(self.all_parking_urls)}")
+            print(f"\n✅ Собрано уникальных ссылок на парковки: {len(self.all_parking_urls)}")
 
-            # ЭТАП 2: Парсим ВСЕ собранные страницы
+            # ЭТАП 2: Парсим ВСЕ собранные ссылки на парковки
             print("\n🏢 ЭТАП 2: ПАРСИНГ ВСЕХ СОБРАННЫХ ПАРКОВОК")
             print("-" * 50)
 
@@ -78,8 +84,12 @@ class TwoGisParser(BaseParser):
         finally:
             await self.close()
 
+    #
+    # Сбор ВСЕХ URL парковок
+    #
+
     async def _collect_all_parking_urls_by_scroll_simple(self) -> bool:
-        """Сбор ВСЕХ URL парковок - упрощенный метод"""
+        """Сбор ВСЕХ URL парковок."""
         print("🔍 Начинаем сбор ссылок...")
 
         # Начинаем с первой страницы
@@ -87,165 +97,188 @@ class TwoGisParser(BaseParser):
 
         print(f"📍 Начальная страница: {start_url}")
 
-        # Открываем страницу
         tab = await self.browser.get(start_url)
-        await asyncio.sleep(random.uniform(5, 7))  # Ждем полной загрузки
+        await asyncio.sleep(random.uniform(5, 7))
 
-        # Собираем ссылки с начальной загрузки
-        print("   📥 Собираем начальные ссылки...")
+        # Собираем ссылки с первой страницы
+        print("   📥 Собираем ссылки с первой страницы...")
         initial_urls = await self._get_urls_from_current_page(tab)
         if initial_urls:
             self.all_parking_urls.update(initial_urls)
-            print(f"   📊 Начальная загрузка: {len(initial_urls)} URL")
+            print(f"   📊 Первая страница: {len(initial_urls)} URL")
         else:
-            print("   ⚠ Не удалось получить начальные URL")
+            print("   ⚠ Не удалось получить ссылки с первой страницы")
             return False
 
         # Прокручиваем страницу для подгрузки новых элементов
         print("   📜 Начинаем прокрутку страницы...")
 
-        scroll_attempts = 0
-        max_scroll_attempts = 40
-        no_new_items_count = 0
-        max_no_new_items = 8
+        # Выполняем скроллинг до конца
+        await self._scroll_to_bottom(tab)
 
-        last_url_count = len(self.all_parking_urls)
+        # Собираем ВСЕ URL после прокрутки
+        current_urls = await self._get_urls_from_current_page(tab)
+        if current_urls:
+            previous_count = len(self.all_parking_urls)
+            self.all_parking_urls.update(current_urls)
+            new_urls = len(self.all_parking_urls) - previous_count
+            print(f"      📎 Всего URL после прокрутки: {len(self.all_parking_urls)} (+{new_urls} новых)")
 
-        while scroll_attempts < max_scroll_attempts and no_new_items_count < max_no_new_items:
-            scroll_attempts += 1
-            print(f"\n   📜 Прокрутка {scroll_attempts}/{max_scroll_attempts}")
+        # ПОСЛЕ ПРОКРУТКИ ДО КОНЦА - ПРОБУЕМ НАЙТИ КНОПКУ ПАГИНАЦИИ
+        print("      🔍 Пробуем найти кнопку пагинации после прокрутки...")
+        await self._try_find_pagination_after_scroll(tab)
 
-            try:
-                # Прокручиваем страницу разными способами
-
-                # Способ 1: Обычная прокрутка
-                if scroll_attempts % 3 == 0:
-                    # Прокручиваем до определенного элемента
-                    print("      🔍 Прокручиваем к элементам с tabindex...")
-                    await tab.evaluate("""
-                        // Ищем элементы с tabindex (возможно это карточки парковок)
-                        const elements = document.querySelectorAll('[tabindex]');
-                        if (elements.length > 0) {
-                            // Прокручиваем к последнему элементу
-                            const lastElement = elements[elements.length - 1];
-                            lastElement.scrollIntoView({behavior: 'smooth', block: 'end'});
-                            console.log('Прокрутили к элементу с tabindex');
-                        }
-                    """)
-                elif scroll_attempts % 2 == 0:
-                    # Прокручиваем до блока результатов
-                    print("      🔍 Прокручиваем к блоку результатов...")
-                    await tab.evaluate("""
-                        // Ищем блоки с результатами
-                        const resultBlocks = [
-                            'div[data-qa="search-list"]',
-                            '._1kf6gff',
-                            '[data-scroll]',
-                            '.minibus__container'
-                        ];
-
-                        let targetElement = null;
-                        for (const selector of resultBlocks) {
-                            const element = document.querySelector(selector);
-                            if (element) {
-                                targetElement = element;
-                                break;
-                            }
-                        }
-
-                        if (targetElement) {
-                            targetElement.scrollTop = targetElement.scrollHeight;
-                            console.log('Прокрутили блок результатов');
-                        }
-                    """)
-                else:
-                    # Обычная прокрутка окна
-                    scroll_amount = random.randint(600, 900)
-                    print(f"      📜 Прокручиваем окно на {scroll_amount}px")
-                    await tab.evaluate(f"window.scrollBy(0, {scroll_amount})")
-
-                # Ждем подгрузки контента
-                wait_time = random.uniform(2.5, 4)
-                print(f"      ⏳ Ждем {wait_time:.1f}с для подгрузки...")
-                await asyncio.sleep(wait_time)
-
-                # Собираем новые URL
-                current_urls = await self._get_urls_from_current_page(tab)
-
-                if current_urls:
-                    previous_count = len(self.all_parking_urls)
-                    self.all_parking_urls.update(current_urls)
-                    new_urls = len(self.all_parking_urls) - previous_count
-
-                    print(f"      📎 Всего URL: {len(self.all_parking_urls)} (+{new_urls} новых)")
-
-                    if new_urls > 0:
-                        no_new_items_count = 0
-                        last_url_count = len(self.all_parking_urls)
-
-                        # Показываем последние добавленные URL
-                        if new_urls <= 3:
-                            print(f"      🔗 Добавлены URL:")
-                            for url in list(current_urls)[-new_urls:]:
-                                print(f"         {self._short_url(url, 60)}")
-                    else:
-                        no_new_items_count += 1
-                        print(f"      ⚠ Нет новых URL ({no_new_items_count}/{max_no_new_items})")
-
-                        # Если 3 раза подряд нет новых URL, пробуем прокрутить до самого конца
-                        if no_new_items_count == 3:
-                            print("      📜 Прокручиваем до самого конца...")
-                            await tab.evaluate("""
-                                // Прокручиваем до конца страницы
-                                window.scrollTo(0, document.body.scrollHeight);
-
-                                // Также пробуем прокрутить все возможные скролл-контейнеры
-                                const scrollContainers = document.querySelectorAll('[data-scroll], ._1kf6gff, [tabindex]');
-                                scrollContainers.forEach(container => {
-                                    if (container.scrollHeight > container.clientHeight) {
-                                        container.scrollTop = container.scrollHeight;
-                                    }
-                                });
-                            """)
-                            await asyncio.sleep(random.uniform(4, 6))
-                else:
-                    print("      ⚠ Не удалось получить URL после прокрутки")
-                    no_new_items_count += 1
-
-            except Exception as e:
-                print(f"      ❌ Ошибка при прокрутке: {str(e)[:100]}")
-                no_new_items_count += 1
-
-            # Задержка между прокрутками
-            if scroll_attempts < max_scroll_attempts and no_new_items_count < max_no_new_items:
-                delay = random.uniform(1.5, 2.5)
-                print(f"      ⏳ Пауза {delay:.1f}с...")
-                await asyncio.sleep(delay)
-
-        print(f"\n✅ Прокрутка завершена после {scroll_attempts} попыток")
+        print(f"\n✅ Прокрутка завершена")
         print(f"📊 Итог: {len(self.all_parking_urls)} уникальных URL")
-
-        # Выводим статистику по собранным URL
-        print(f"\n📋 Статистика собранных ссылок:")
-        print(f"   Первые 5 URL:")
-        for i, url in enumerate(list(self.all_parking_urls)[:5], 1):
-            print(f"   {i}. {self._short_url(url, 70)}")
 
         return len(self.all_parking_urls) > 0
 
-    async def _get_urls_from_current_page(self, tab) -> Set[str]:
-        """Получение URL парковок с текущей страницы"""
-        try:
-            # Даем время на загрузку
-            await asyncio.sleep(1)
+    async def _scroll_to_bottom(self, tab):
+        """Прокручивает ВСЕ скроллируемые контейнеры на странице."""
+        print("   📜 СКРОЛЛИМ ВСЕ КОНТЕЙНЕРЫ...")
 
-            # Получаем HTML
+        try:
+            current_url = await tab.evaluate("window.location.href")
+            print(f"      📍 Страница: {current_url}")
+
+            # 1. Считаем сколько контейнеров
+            container_count = await tab.evaluate("""
+                document.querySelectorAll('[data-scroll], [tabindex], [overflow="auto"], [overflow="scroll"]').length
+            """)
+
+            # 2. Прокручиваем КАЖДЫЙ контейнер
+            for i in range(container_count):
+                await tab.evaluate(f"""
+                    (function() {{
+                        const containers = document.querySelectorAll('[data-scroll], [tabindex], [overflow="auto"], [overflow="scroll"]');
+                        if (containers[{i}]) {{
+                            const container = containers[{i}];
+                            // Проверяем, можно ли скроллить
+                            if (container.scrollHeight > container.clientHeight) {{
+                                console.log('Скроллим контейнер', container.tagName, container.className);
+                                container.scrollTop = container.scrollHeight;
+                            }}
+                        }}
+                    }})()
+                """)
+
+                # Небольшая пауза между скроллами
+                await asyncio.sleep(0.5)
+
+            # 3. Ждем
+            await asyncio.sleep(random.uniform(2, 3))
+
+        except Exception as e:
+            print(f"      ❌ Ошибка: {str(e)[:100]}")
+
+    async def _try_find_pagination_after_scroll(self, tab, current_page: int = 1):
+        """Попытка найти кнопки пагинации после прокрутки"""
+        try:
+            # Получаем HTML страницы
+            html = await tab.get_content()
+            soup = BeautifulSoup(html, 'lxml')
+
+            next_page_num = current_page + 1
+            found_next_page = False
+
+            # Ищем ссылку на следующую страницу
+            for link in soup.find_all('a', href=True):
+                href = link['href']
+                match = re.search(r'/page/(\d+)', href)
+                if match:
+                    page_num = int(match.group(1))
+                    if page_num == next_page_num:
+                        print(f"      🖱 Переходим на страницу {next_page_num}")
+
+                        try:
+                            selector = f'a[href*="/page/{next_page_num}"]'
+                            element = await tab.query_selector(selector)
+
+                            if element:
+                                await element.click()
+                                await asyncio.sleep(random.uniform(4, 6))
+
+                                await self._scroll_to_bottom(tab)
+
+                                urls_page = await self._get_urls_from_current_page(tab)
+                                if urls_page:
+                                    before = len(self.all_parking_urls)
+                                    self.all_parking_urls.update(urls_page)
+                                    new_count = len(self.all_parking_urls) - before
+                                    print(f"      📊 +{new_count} новых URL")
+
+                                await self._try_find_pagination_after_scroll(tab, next_page_num)
+                                found_next_page = True
+                                break
+
+                        except Exception as e:
+                            print(f"      ❌ Ошибка: {str(e)[:60]}")
+                        break
+
+            if not found_next_page:
+                print(f"      ⚠ Нет больше страниц")
+
+        except Exception as e:
+            print(f"      ❌ Ошибка: {str(e)[:60]}")
+
+    async def _collect_from_remaining_pages(self, tab, start_page: int = 3, max_pages: int = 20):
+        """Сбор ссылок с оставшихся страниц."""
+        print(f"      🔄 Начинаем сбор с оставшихся страниц (с {start_page})...")
+
+        for page_num in range(start_page, max_pages + 1):
+            print(f"      📄 Ищем страницу {page_num}...")
+
+            # Собираем ссылки с текущей страницы
+            current_urls = await self._get_urls_from_current_page(tab)
+            if current_urls:
+                before = len(self.all_parking_urls)
+                self.all_parking_urls.update(current_urls)
+                new_count = len(self.all_parking_urls) - before
+                print(f"      📊 Собрано: {len(current_urls)} URL (+{new_count} новых)")
+
+            # Ищем ссылку на следующую страницу
+            selector = f'a[href*="/page/{page_num}"]'
+            element = await tab.query_selector(selector)
+
+            if element:
+                print(f"      ✅ Нашли элемент для страницы {page_num}")
+
+                try:
+                    href = await element.get_attribute('href')
+                    print(f"      🔗 HREF: {href}")
+                except:
+                    pass
+
+                # Кликаем
+                print(f"      🖱 Кликаем на страницу {page_num}...")
+                await element.click()
+                print(f"      ✅ Клик выполнен")
+
+                # Ждем загрузки
+                await asyncio.sleep(random.uniform(3, 5))
+            else:
+                print(f"      ❌ Страница {page_num} не найдена, заканчиваем")
+                break
+
+        # Собираем с последней страницы
+        print(f"      📥 Собираем ссылки с последней страницы...")
+        last_urls = await self._get_urls_from_current_page(tab)
+        if last_urls:
+            before = len(self.all_parking_urls)
+            self.all_parking_urls.update(last_urls)
+            new_count = len(self.all_parking_urls) - before
+            print(f"      📊 С последней страницы: +{new_count} новых URL")
+
+        print(f"      ✅ Сбор со страниц завершен")
+
+    async def _get_urls_from_current_page(self, tab) -> Set[str]:
+        """Получение URL парковок с текущей страницы."""
+        try:
+            await asyncio.sleep(1)
             html = await tab.get_content()
 
-            # Извлекаем URL из HTML
             urls = self._extract_urls_from_html(html)
 
-            # Фильтруем
             filtered_urls = set()
             for url in urls:
                 if self._is_valid_parking_url(url):
@@ -260,7 +293,7 @@ class TwoGisParser(BaseParser):
             return set()
 
     def _extract_urls_from_html(self, html: str) -> List[str]:
-        """Извлечение URL парковок из HTML страницы поиска"""
+        """Извлечение URL парковок из HTML страницы поиска."""
         soup = BeautifulSoup(html, 'lxml')
         urls = []
 
@@ -397,8 +430,12 @@ class TwoGisParser(BaseParser):
         print(f"\n🎉 Парсинг завершен!")
         print(f"📊 Итог: Успешно {success_count}, Ошибок {fail_count}")
 
+    #
+    # Парсинг одной страницы парковки
+    #
+
     async def _parse_single_parking_page(self, url: str) -> Optional[Dict[str, Any]]:
-        """Парсинг одной страницы парковки"""
+        """Парсинг одной страницы парковки."""
         max_retries = 2
 
         for attempt in range(1, max_retries + 1):
@@ -437,11 +474,8 @@ class TwoGisParser(BaseParser):
 
         return None
 
-    # Методы extract_data, _generate_parking_id, _remove_duplicates,
-    # _print_final_stats остаются такими же как в предыдущей версии
-
     def extract_data(self, url: str, soup: BeautifulSoup, html: str) -> Dict[str, Any]:
-        """Извлечение данных из страницы 2ГИС"""
+        """Извлечение данных из страницы 2ГИС."""
         data = {}
 
         # Базовые поля
@@ -453,7 +487,6 @@ class TwoGisParser(BaseParser):
             'h1',
             '[itemprop="name"]',
             '.firm-card__title',
-            '._1n6g2v2',
             '.business-card-title',
             'h1[data-qa="firm-card-header-name"]'
         ]
@@ -470,7 +503,6 @@ class TwoGisParser(BaseParser):
         address_selectors = [
             'address',
             '[itemprop="address"]',
-            '._b0ke8',
             '.address',
             '.firm-card__address',
             '[data-qa="firm-card-address"]'
@@ -535,8 +567,7 @@ class TwoGisParser(BaseParser):
             '[itemprop="category"]',
             '.category',
             '.firm-card__category',
-            '.business-card-category',
-            '._1p8iqzw'
+            '.business-card-category'
         ]
 
         for selector in type_selectors:
@@ -569,7 +600,6 @@ class TwoGisParser(BaseParser):
             '[itemprop="ratingValue"]',
             '.rating',
             '.business-rating-badge',
-            '._1fkin5c',
             '[data-qa="rating"]'
         ]
 
@@ -681,7 +711,7 @@ class TwoGisParser(BaseParser):
         return data
 
     def _generate_parking_id(self, url: str) -> str:
-        """Генерация уникального ID для парковки"""
+        """Генерация уникального ID для парковки."""
         match = re.search(r'/firm/(\d+)', url)
         if match:
             return f"2gis_{match.group(1)}"
@@ -690,7 +720,7 @@ class TwoGisParser(BaseParser):
         return f"2gis_{url_hash}"
 
     def _remove_duplicates(self):
-        """Удаление дубликатов из результатов"""
+        """Удаление дубликатов из результатов."""
         if not self.results:
             return
 
@@ -722,8 +752,12 @@ class TwoGisParser(BaseParser):
 
         self.results = unique_results
 
+    #
+    # Вывод финальной статистики
+    #
+
     def _print_final_stats(self, all_urls: List[str]):
-        """Вывод финальной статистики"""
+        """Вывод финальной статистики."""
         print("\n" + "=" * 60)
         print("📊 ФИНАЛЬНАЯ СТАТИСТИКА 2ГИС")
         print("=" * 60)
