@@ -298,3 +298,8 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+# python main.py --merge-only
+# python main.py --skip-yandex
+# python main.py --skip-2gis

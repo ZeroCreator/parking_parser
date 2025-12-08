@@ -1,10 +1,8 @@
-"2Gis parser"
-
 import asyncio
 import random
-import time
 import re
 import hashlib
+import time
 from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
 
@@ -20,8 +18,6 @@ class TwoGisParser(BaseParser):
     def __init__(self, headless: bool = True):
         super().__init__(headless)
         self.processed_ids: Set[str] = set()
-        self.start_time = None
-        self.all_parking_urls: Set[str] = set()
         self.session_headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -32,12 +28,8 @@ class TwoGisParser(BaseParser):
     def source_name(self) -> str:
         return "2gis"
 
-    #
-    # Основной метод парсинга 2ГИС
-    #
-
     async def parse(self, max_pages: int = 30) -> List[Dict[str, Any]]:
-        """Основной метод парсинга 2ГИС."""
+        """Основной метод парсинга 2ГИС"""
         print("=" * 60)
         print("🚀 ЗАПУСК ПАРСЕРА 2ГИС")
         print("=" * 60)
@@ -49,30 +41,28 @@ class TwoGisParser(BaseParser):
             return []
 
         try:
-            # ЭТАП 1: Собираем ВСЕ ссылки
+            # 1. Собираем ссылки
             print(f"\n📄 ЭТАП 1: СБОР ВСЕХ ССЫЛОК НА ПАРКОВКИ")
             print("-" * 50)
 
-            await self._collect_all_parking_urls_by_scroll_simple()
+            await self._collect_all_parking_urls()
 
-            if not self.all_parking_urls:
+            if not self.all_urls:
                 print("❌ Не удалось собрать ссылки на парковки")
                 return []
 
-            print(f"\n✅ Собрано уникальных ссылок на парковки: {len(self.all_parking_urls)}")
+            print(f"\n✅ Собрано уникальных ссылок на парковки: {len(self.all_urls)}")
 
-            # ЭТАП 2: Парсим ВСЕ собранные ссылки на парковки
+            # 2. Парсим все собранные ссылки
             print("\n🏢 ЭТАП 2: ПАРСИНГ ВСЕХ СОБРАННЫХ ПАРКОВОК")
             print("-" * 50)
 
-            urls_list = list(self.all_parking_urls)
+            urls_list = list(self.all_urls)
             await self._parse_all_parking_pages(urls_list)
 
-            # Финальная статистика
-            self._print_final_stats(urls_list)
-
-            # Удаляем дубликаты
+            # 3. Удаляем дубликаты и выводим статистику
             self._remove_duplicates()
+            self._print_final_stats(len(self.all_urls))
 
             return self.results
 
@@ -84,17 +74,12 @@ class TwoGisParser(BaseParser):
         finally:
             await self.close()
 
-    #
-    # Сбор ВСЕХ URL парковок
-    #
-
-    async def _collect_all_parking_urls_by_scroll_simple(self) -> bool:
-        """Сбор ВСЕХ URL парковок."""
+    async def _collect_all_parking_urls(self) -> bool:
+        """Сбор URL парковок (специфично для 2ГИС)"""
         print("🔍 Начинаем сбор ссылок...")
 
         # Начинаем с первой страницы
         start_url = "https://2gis.ru/spb/search/parking"
-
         print(f"📍 Начальная страница: {start_url}")
 
         tab = await self.browser.get(start_url)
@@ -104,43 +89,37 @@ class TwoGisParser(BaseParser):
         print("   📥 Собираем ссылки с первой страницы...")
         initial_urls = await self._get_urls_from_current_page(tab)
         if initial_urls:
-            self.all_parking_urls.update(initial_urls)
+            self.all_urls.update(initial_urls)
             print(f"   📊 Первая страница: {len(initial_urls)} URL")
         else:
             print("   ⚠ Не удалось получить ссылки с первой страницы")
             return False
 
-        # Прокручиваем страницу для подгрузки новых элементов
+        # Прокручиваем страницу
         print("   📜 Начинаем прокрутку страницы...")
-
-        # Выполняем скроллинг до конца
-        await self._scroll_to_bottom(tab)
+        await self._scroll_2gis_to_bottom(tab)
 
         # Собираем ВСЕ URL после прокрутки
         current_urls = await self._get_urls_from_current_page(tab)
         if current_urls:
-            previous_count = len(self.all_parking_urls)
-            self.all_parking_urls.update(current_urls)
-            new_urls = len(self.all_parking_urls) - previous_count
-            print(f"      📎 Всего URL после прокрутки: {len(self.all_parking_urls)} (+{new_urls} новых)")
+            previous_count = len(self.all_urls)
+            self.all_urls.update(current_urls)
+            new_urls = len(self.all_urls) - previous_count
+            print(f"      📎 Всего URL после прокрутки: {len(self.all_urls)} (+{new_urls} новых)")
 
-        # ПОСЛЕ ПРОКРУТКИ ДО КОНЦА - ПРОБУЕМ НАЙТИ КНОПКУ ПАГИНАЦИИ
+        # Пробуем найти кнопку пагинации
         print("      🔍 Пробуем найти кнопку пагинации после прокрутки...")
-        await self._try_find_pagination_after_scroll(tab)
+        await self._try_find_2gis_pagination_after_scroll(tab)
 
-        print(f"\n✅ Прокрутка завершена")
-        print(f"📊 Итог: {len(self.all_parking_urls)} уникальных URL")
+        print(f"\n✅ Сбор ссылок завершен")
+        print(f"📊 Итог: {len(self.all_urls)} уникальных URL")
+        return len(self.all_urls) > 0
 
-        return len(self.all_parking_urls) > 0
-
-    async def _scroll_to_bottom(self, tab):
-        """Прокручивает ВСЕ скроллируемые контейнеры на странице."""
+    async def _scroll_2gis_to_bottom(self, tab):
+        """Прокручивает ВСЕ скроллируемые контейнеры на странице 2ГИС"""
         print("   📜 СКРОЛЛИМ ВСЕ КОНТЕЙНЕРЫ...")
 
         try:
-            current_url = await tab.evaluate("window.location.href")
-            print(f"      📍 Страница: {current_url}")
-
             # 1. Считаем сколько контейнеров
             container_count = await tab.evaluate("""
                 document.querySelectorAll('[data-scroll], [tabindex], [overflow="auto"], [overflow="scroll"]').length
@@ -153,28 +132,22 @@ class TwoGisParser(BaseParser):
                         const containers = document.querySelectorAll('[data-scroll], [tabindex], [overflow="auto"], [overflow="scroll"]');
                         if (containers[{i}]) {{
                             const container = containers[{i}];
-                            // Проверяем, можно ли скроллить
                             if (container.scrollHeight > container.clientHeight) {{
-                                console.log('Скроллим контейнер', container.tagName, container.className);
                                 container.scrollTop = container.scrollHeight;
                             }}
                         }}
                     }})()
                 """)
-
-                # Небольшая пауза между скроллами
                 await asyncio.sleep(0.5)
 
-            # 3. Ждем
             await asyncio.sleep(random.uniform(2, 3))
 
         except Exception as e:
             print(f"      ❌ Ошибка: {str(e)[:100]}")
 
-    async def _try_find_pagination_after_scroll(self, tab, current_page: int = 1):
-        """Попытка найти кнопки пагинации после прокрутки"""
+    async def _try_find_2gis_pagination_after_scroll(self, tab, current_page: int = 1):
+        """Попытка найти кнопки пагинации после прокрутки (2ГИС)"""
         try:
-            # Получаем HTML страницы
             html = await tab.get_content()
             soup = BeautifulSoup(html, 'lxml')
 
@@ -190,30 +163,25 @@ class TwoGisParser(BaseParser):
                     if page_num == next_page_num:
                         print(f"      🖱 Переходим на страницу {next_page_num}")
 
-                        try:
-                            selector = f'a[href*="/page/{next_page_num}"]'
-                            element = await tab.query_selector(selector)
+                        selector = f'a[href*="/page/{next_page_num}"]'
+                        element = await tab.query_selector(selector)
 
-                            if element:
-                                await element.click()
-                                await asyncio.sleep(random.uniform(4, 6))
+                        if element:
+                            await element.click()
+                            await asyncio.sleep(random.uniform(4, 6))
 
-                                await self._scroll_to_bottom(tab)
+                            await self._scroll_2gis_to_bottom(tab)
 
-                                urls_page = await self._get_urls_from_current_page(tab)
-                                if urls_page:
-                                    before = len(self.all_parking_urls)
-                                    self.all_parking_urls.update(urls_page)
-                                    new_count = len(self.all_parking_urls) - before
-                                    print(f"      📊 +{new_count} новых URL")
+                            urls_page = await self._get_urls_from_current_page(tab)
+                            if urls_page:
+                                before = len(self.all_urls)
+                                self.all_urls.update(urls_page)
+                                new_count = len(self.all_urls) - before
+                                print(f"      📊 +{new_count} новых URL")
 
-                                await self._try_find_pagination_after_scroll(tab, next_page_num)
-                                found_next_page = True
-                                break
-
-                        except Exception as e:
-                            print(f"      ❌ Ошибка: {str(e)[:60]}")
-                        break
+                            await self._try_find_2gis_pagination_after_scroll(tab, next_page_num)
+                            found_next_page = True
+                            break
 
             if not found_next_page:
                 print(f"      ⚠ Нет больше страниц")
@@ -221,68 +189,18 @@ class TwoGisParser(BaseParser):
         except Exception as e:
             print(f"      ❌ Ошибка: {str(e)[:60]}")
 
-    async def _collect_from_remaining_pages(self, tab, start_page: int = 3, max_pages: int = 20):
-        """Сбор ссылок с оставшихся страниц."""
-        print(f"      🔄 Начинаем сбор с оставшихся страниц (с {start_page})...")
-
-        for page_num in range(start_page, max_pages + 1):
-            print(f"      📄 Ищем страницу {page_num}...")
-
-            # Собираем ссылки с текущей страницы
-            current_urls = await self._get_urls_from_current_page(tab)
-            if current_urls:
-                before = len(self.all_parking_urls)
-                self.all_parking_urls.update(current_urls)
-                new_count = len(self.all_parking_urls) - before
-                print(f"      📊 Собрано: {len(current_urls)} URL (+{new_count} новых)")
-
-            # Ищем ссылку на следующую страницу
-            selector = f'a[href*="/page/{page_num}"]'
-            element = await tab.query_selector(selector)
-
-            if element:
-                print(f"      ✅ Нашли элемент для страницы {page_num}")
-
-                try:
-                    href = await element.get_attribute('href')
-                    print(f"      🔗 HREF: {href}")
-                except:
-                    pass
-
-                # Кликаем
-                print(f"      🖱 Кликаем на страницу {page_num}...")
-                await element.click()
-                print(f"      ✅ Клик выполнен")
-
-                # Ждем загрузки
-                await asyncio.sleep(random.uniform(3, 5))
-            else:
-                print(f"      ❌ Страница {page_num} не найдена, заканчиваем")
-                break
-
-        # Собираем с последней страницы
-        print(f"      📥 Собираем ссылки с последней страницы...")
-        last_urls = await self._get_urls_from_current_page(tab)
-        if last_urls:
-            before = len(self.all_parking_urls)
-            self.all_parking_urls.update(last_urls)
-            new_count = len(self.all_parking_urls) - before
-            print(f"      📊 С последней страницы: +{new_count} новых URL")
-
-        print(f"      ✅ Сбор со страниц завершен")
-
     async def _get_urls_from_current_page(self, tab) -> Set[str]:
-        """Получение URL парковок с текущей страницы."""
+        """Получение URL парковок с текущей страницы (2ГИС)"""
         try:
             await asyncio.sleep(1)
             html = await tab.get_content()
 
-            urls = self._extract_urls_from_html(html)
+            urls = self._extract_2gis_urls_from_html(html)
 
             filtered_urls = set()
             for url in urls:
-                if self._is_valid_parking_url(url):
-                    clean_url = self._clean_parking_url(url)
+                if self._is_valid_2gis_url(url):
+                    clean_url = self._clean_2gis_url(url)
                     if clean_url:
                         filtered_urls.add(clean_url)
 
@@ -292,8 +210,8 @@ class TwoGisParser(BaseParser):
             print(f"   ❌ Ошибка при извлечении URL: {str(e)[:50]}")
             return set()
 
-    def _extract_urls_from_html(self, html: str) -> List[str]:
-        """Извлечение URL парковок из HTML страницы поиска."""
+    def _extract_2gis_urls_from_html(self, html: str) -> List[str]:
+        """Извлечение URL парковок из HTML страницы поиска (2ГИС)"""
         soup = BeautifulSoup(html, 'lxml')
         urls = []
 
@@ -313,8 +231,7 @@ class TwoGisParser(BaseParser):
                 else:
                     continue
 
-                # Очищаем URL
-                clean_url = self._clean_parking_url(full_url)
+                clean_url = self._clean_2gis_url(full_url)
                 if clean_url:
                     urls.append(clean_url)
 
@@ -327,12 +244,10 @@ class TwoGisParser(BaseParser):
                 if url not in urls:
                     urls.append(url)
 
-        # Удаляем дубликаты
         return list(set(urls))
 
-    def _is_valid_parking_url(self, url: str) -> bool:
-        """Проверка валидности URL парковки"""
-        # Должен содержать /firm/ и ID
+    def _is_valid_2gis_url(self, url: str) -> bool:
+        """Проверка валидности URL парковки (2ГИС)"""
         if '/firm/' not in url:
             return False
 
@@ -354,15 +269,11 @@ class TwoGisParser(BaseParser):
 
         return True
 
-    def _clean_parking_url(self, url: str) -> str:
-        """Очистка URL парковки"""
-        # Удаляем параметры и якоря
+    def _clean_2gis_url(self, url: str) -> str:
+        """Очистка URL парковки (2ГИС)"""
         url = url.split('?')[0].split('#')[0]
-
-        # Удаляем лишние слэши
         url = url.rstrip('/')
 
-        # Убеждаемся, что это полный URL
         if url.startswith('//'):
             url = f"https:{url}"
         elif url.startswith('/'):
@@ -372,110 +283,8 @@ class TwoGisParser(BaseParser):
 
         return url
 
-    def _short_url(self, url: str, max_length: int = 60) -> str:
-        """Сокращение URL для вывода"""
-        if len(url) <= max_length:
-            return url
-        return url[:max_length - 3] + "..."
-
-    # Остальные методы остаются без изменений...
-    async def _parse_all_parking_pages(self, urls: List[str]):
-        """Парсинг ВСЕХ собранных страниц парковок"""
-        print(f"\n🏢 Начинаем парсинг {len(urls)} парковок 2ГИС...")
-
-        success_count = 0
-        fail_count = 0
-
-        for i, url in enumerate(urls, 1):
-            print(f"\n[{i}/{len(urls)}] Парковка {i}")
-            print(f"   🔗 {self._short_url(url, 60)}")
-
-            # Парсим страницу
-            data = await self._parse_single_parking_page(url)
-
-            if data:
-                normalized_data = self.normalize_data(data)
-                self.results.append(normalized_data)
-                success_count += 1
-
-                # Выводим краткую информацию
-                name = normalized_data.get('Название объекта', 'Без названия')[:40]
-                address = normalized_data.get('Адрес', '')[:50]
-                parking_type = normalized_data.get('Тип парковки', 'неизвестно')
-
-                print(f"   ✅ {name}")
-                print(f"      📍 {address}")
-                print(f"      🚗 Тип: {parking_type}")
-            else:
-                fail_count += 1
-                print(f"   ❌ Не удалось распарсить")
-
-            # Статистика прогресса
-            if i % 10 == 0 or i == len(urls):
-                progress = (i / len(urls)) * 100
-                elapsed = time.time() - self.start_time
-                estimated_total = (elapsed / max(1, i)) * len(urls)
-                remaining = max(0, estimated_total - elapsed)
-
-                print(f"\n📊 Прогресс: {i}/{len(urls)} ({progress:.1f}%)")
-                print(f"⏱ Прошло: {elapsed:.0f}с | Осталось: {remaining:.0f}с")
-                print(f"✅ Успешно: {success_count} | ❌ Ошибок: {fail_count}")
-
-            # Задержка между запросами
-            if i < len(urls):
-                delay = random.uniform(4, 7)
-                print(f"   ⏳ Задержка {delay:.1f}с...")
-                await asyncio.sleep(delay)
-
-        print(f"\n🎉 Парсинг завершен!")
-        print(f"📊 Итог: Успешно {success_count}, Ошибок {fail_count}")
-
-    #
-    # Парсинг одной страницы парковки
-    #
-
-    async def _parse_single_parking_page(self, url: str) -> Optional[Dict[str, Any]]:
-        """Парсинг одной страницы парковки."""
-        max_retries = 2
-
-        for attempt in range(1, max_retries + 1):
-            try:
-                if attempt > 1:
-                    print(f"   🔄 Повторная попытка {attempt}/{max_retries}")
-                    await asyncio.sleep(random.uniform(3, 5))
-
-                # Открываем страницу парковки в новом табе
-                tab = await self.browser.get(url)
-
-                # Ждем загрузки
-                await asyncio.sleep(random.uniform(3, 4))
-
-                # Получаем HTML
-                html = await tab.get_content()
-
-                # Парсим данные
-                soup = BeautifulSoup(str(html), 'lxml')
-                data = self.extract_data(url, soup, str(html))
-
-                # Проверяем минимальные данные
-                if data.get('Название объекта') or data.get('Адрес'):
-                    return data
-                else:
-                    print(f"   ⚠ Мало данных на странице")
-
-            except Exception as e:
-                error_msg = str(e)
-                print(f"   ✗ Ошибка: {error_msg[:50]}...")
-
-            # Задержка перед повторной попыткой
-            if attempt < max_retries:
-                retry_delay = random.uniform(5, 8)
-                await asyncio.sleep(retry_delay)
-
-        return None
-
-    def extract_data(self, url: str, soup: BeautifulSoup, html: str) -> Dict[str, Any]:
-        """Извлечение данных из страницы 2ГИС."""
+    def _extract_page_data(self, url: str, soup: BeautifulSoup, html: str) -> Dict[str, Any]:
+        """Извлечение данных из страницы 2ГИС"""
         data = {}
 
         # Базовые поля
@@ -562,7 +371,7 @@ class TwoGisParser(BaseParser):
                     data['Сайт'] = href
                     break
 
-        # Тип объекта / категория
+        # Тип объекта
         type_selectors = [
             '[itemprop="category"]',
             '.category',
@@ -710,93 +519,45 @@ class TwoGisParser(BaseParser):
 
         return data
 
+    def extract_coordinates(self, url: str) -> Optional[str]:
+        """Извлечение координат из URL (2ГИС)"""
+        patterns = [
+            r'@([\d\.]+),([\d\.]+)',
+            r'll=([\d\.]+)%2C([\d\.]+)',
+            r'/([\d\.]+)%2C([\d\.]+)/',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                lon, lat = match.groups()
+                return f"{lon},{lat}"
+
+        return None
+
+    def detect_parking_type(self, html: str, name: str = "") -> str:
+        """Определение типа парковки (2ГИС)"""
+        text = (html + " " + name).lower()
+        type_info = []
+
+        if any(word in text for word in ['платн', 'оплат', 'тариф', 'цена', '₽', 'руб']):
+            type_info.append('платная')
+        elif any(word in text for word in ['бесплатн', 'free', 'gratis']):
+            type_info.append('бесплатная')
+
+        if any(word in text for word in ['крыт', 'закрыт', 'охраня', 'подземн']):
+            type_info.append('крытая')
+            type_info.append('охраняемая')
+        elif any(word in text for word in ['уличн', 'открыт', 'гост']):
+            type_info.append('уличная')
+
+        return ", ".join(type_info) if type_info else "неизвестно"
+
     def _generate_parking_id(self, url: str) -> str:
-        """Генерация уникального ID для парковки."""
+        """Генерация уникального ID для парковки"""
         match = re.search(r'/firm/(\d+)', url)
         if match:
             return f"2gis_{match.group(1)}"
 
         url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
         return f"2gis_{url_hash}"
-
-    def _remove_duplicates(self):
-        """Удаление дубликатов из результатов."""
-        if not self.results:
-            return
-
-        unique_results = []
-        seen_ids = set()
-
-        for item in self.results:
-            # Генерируем уникальный ключ
-            name = item.get('Название объекта', '').strip()
-            address = item.get('Адрес', '').strip()
-            url = item.get('Ссылка на объект') or item.get('Ссылка', '')
-
-            if url:
-                parking_id = self._generate_parking_id(url)
-                key = parking_id
-            elif name and address:
-                key = f"{name[:30]}_{address[:30]}"
-            else:
-                data_str = str(item)
-                key = hashlib.md5(data_str.encode()).hexdigest()[:12]
-
-            if key not in seen_ids:
-                seen_ids.add(key)
-                unique_results.append(item)
-
-        removed = len(self.results) - len(unique_results)
-        if removed > 0:
-            print(f"🗑 Удалено {removed} дубликатов 2ГИС")
-
-        self.results = unique_results
-
-    #
-    # Вывод финальной статистики
-    #
-
-    def _print_final_stats(self, all_urls: List[str]):
-        """Вывод финальной статистики."""
-        print("\n" + "=" * 60)
-        print("📊 ФИНАЛЬНАЯ СТАТИСТИКА 2ГИС")
-        print("=" * 60)
-
-        elapsed = time.time() - self.start_time
-        minutes = int(elapsed // 60)
-        seconds = int(elapsed % 60)
-
-        print(f"⏱ Общее время: {minutes} мин {seconds} сек")
-        print(f"🔗 Собрано уникальных URL: {len(all_urls)}")
-        print(f"✅ Успешно распарсено: {len(self.results)}")
-
-        if all_urls:
-            efficiency = len(self.results) / max(1, len(all_urls)) * 100
-            print(f"📈 Эффективность парсинга: {efficiency:.1f}%")
-
-        if self.results:
-            closed_count = 0
-            paid_count = 0
-
-            for item in self.results:
-                parking_type = item.get('Тип парковки', '').lower()
-                if 'крыт' in parking_type or 'охраня' in parking_type:
-                    closed_count += 1
-                if 'платн' in parking_type:
-                    paid_count += 1
-
-            print(f"\n🚗 Типы парковок 2ГИС:")
-            print(f"   Закрытых/охраняемых: {closed_count}")
-            print(f"   Платных: {paid_count}")
-
-            if len(self.results) >= 3:
-                print(f"\n🏆 Примеры найденных парковок:")
-                for i, item in enumerate(self.results[:3], 1):
-                    name = item.get('Название объекта', 'Без названия')[:40]
-                    address = item.get('Адрес', '')[:50]
-                    parking_type = item.get('Тип парковки', 'неизвестно')
-                    print(f"   {i}. {name}")
-                    print(f"      Адрес: {address}")
-                    print(f"      Тип: {parking_type}")
-
-        print("=" * 60)
