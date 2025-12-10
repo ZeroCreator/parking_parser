@@ -64,7 +64,7 @@ class BaseParser(ABC):
 
             self.browser = await nodriver.start(
                 headless=self.headless,
-                window_size=(1200, 800),
+                window_size=(1200, 900),
                 disable_features=[],
                 args=args
             )

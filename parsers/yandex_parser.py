@@ -19,9 +19,9 @@ class YandexParser(BaseParser):
 
     async def parse(self) -> List[Dict[str, Any]]:
         """Основной метод парсинга Яндекс Карт"""
-        print("=" * 60)
-        print("🚀 ЗАПУСК ПАРСЕРА ЯНДЕКС КАРТ")
-        print("=" * 60)
+        print("=" * 80)
+        print("🚀 ПАРСЕР ЯНДЕКС КАРТ - САНКТ-ПЕТЕРБУРГ")
+        print("=" * 80)
 
         self.start_time = time.time()
         self.results = []
@@ -31,47 +31,68 @@ class YandexParser(BaseParser):
             return []
 
         try:
-            # 1. Загружаем страницу поиска
-            print("\n📄 ЗАГРУЗКА СТРАНИЦЫ ПОИСКА")
-            print("-" * 50)
+            # Используем автоматическую сетку вместо ручного списка
+            search_areas = self.generate_grid_z14()
 
-            search_url = "https://yandex.ru/maps/2/saint-petersburg/search/парковки/"
-            print(f"🔗 URL: {search_url}")
+            # 1. Парсим все области города
+            print(f"\n🎯 НАЧИНАЕМ ПАРСИНГ {len(search_areas)} АВТОЗОН (z=14)...")
 
-            page = await self.browser.get(search_url)
-            await asyncio.sleep(3)
+            for i, area in enumerate(search_areas, 1):
+                urls_before = len(self.all_urls)
 
-            # Кликаем кнопку "Показать результаты", если есть
-            button = await page.query_selector('span.search-command-view__show-results-button')
-            if button:
-                print("✅ Кнопка найдена, кликаем...")
-                await button.click()
-                await asyncio.sleep(3)
-                print("✅ Результаты загружены")
+                print(f"\n📍 Зона {i}/{len(search_areas)}: {area['name']}")
+                print(f"   Координаты: {area['coords'][1]:.4f}°N, {area['coords'][0]:.4f}°E")
+                print(f"   URL: {area['url']}")
 
-            # 2. Собираем ссылки
-            print("\n🔗 СБОР ССЫЛОК СО СКРОЛЛИНГОМ")
-            print("-" * 50)
+                page = await self.browser.get(area['url'])
+                await asyncio.sleep(4)
 
-            await self._scroll_and_collect_urls(page)
+                # Кликаем кнопку "Показать результаты", если есть
+                button = await page.query_selector('span.search-command-view__show-results-button')
+                if button:
+                    print("✅ Кнопка найдена, кликаем...")
+                    await button.click()
+                    await asyncio.sleep(3)
+                    print("✅ Результаты загружены")
+
+                # Скрапим эту область
+                await self._scroll_and_collect_urls(page)
+
+                new_urls = len(self.all_urls) - urls_before
+                print(f"✅ В области найдено парковок: {new_urls}")
+                print(f"\n✅ Всего собрано ссылок на парковки: {len(self.all_urls)}")
+
+                # Пауза между областями
+                if i < len(search_areas):
+                    await asyncio.sleep(random.uniform(5, 8))
 
             if not self.all_urls:
                 print("❌ Не удалось собрать ссылки")
                 return []
 
-            print(f"✅ Собрано уникальных ссылок: {len(self.all_urls)}")
+            print(f"\n✅ Всего собрано ссылок на парковки: {len(self.all_urls)}")
 
-            # 3. Парсим парковки
-            print("\n🏢 ДЕТАЛЬНЫЙ ПАРСИНГ ПАРКОВОК")
-            print("-" * 50)
+            # 2. Парсим каждую парковку
+            print("\n🏢 ПАРСИМ ДАННЫЕ ПАРКОВОК...")
+            urls_list = list(self.all_urls)
 
-            urls_to_parse = list(self.all_urls)
-            print(f"📊 Будем парсить {len(urls_to_parse)} парковок")
+            for i, url in enumerate(urls_list, 1):
+                print(f"   {i}/{len(urls_list)}: {url}")
+                data = await self.parse_parking_page(url)
+                if data:
+                    self.results.append(data)
+                    print(f"      ✅ Получены данные: {data.get('Название парковки', 'Без названия')}")
+                else:
+                    print(f"      ⚠ Не удалось получить данные")
 
-            await self._parse_all_parking_pages(urls_to_parse)
+                # Задержка между запросами
+                if i < len(urls_list):
+                    await asyncio.sleep(random.uniform(3, 5))
 
-            # 4. Удаляем дубликаты и выводим статистику
+            # 3. Удаляем дубликаты
             self._remove_duplicates()
+
+            # 4. Выводим статистику
             self._print_final_stats(len(self.all_urls))
 
             return self.results
@@ -84,46 +105,94 @@ class YandexParser(BaseParser):
         finally:
             await self.close()
 
+    def generate_grid_z14(self) -> List[Dict[str, str]]:
+        """
+        Автоматически генерирует сетку зон для парсинга (z=14).
+        Возвращает список URL для поиска, покрывающих весь Санкт-Петербург.
+        """
+        # 1. Определяем географические границы Санкт-Петербурга
+        # (широта lat, долгота lon)
+        # Эти значения можно немного расширить для полного охвата
+        LAT_MIN, LAT_MAX = 59.80, 60.05  # Север-Юг
+        LON_MIN, LON_MAX = 29.60, 30.70  # Запад-Восток
+
+        # 2. Рассчитываем шаг сетки для z=14
+        # При z=14 sspn ~0.04-0.05 градуса, делаем шаг немного меньше для перекрытия
+        # Это обеспечит полный охват без пропусков
+        LAT_STEP = 0.04  # ~4.4 км
+        LON_STEP = 0.06  # ~3.8 км на широте СПб
+
+        zones = []
+        zone_counter = 1
+
+        # 3. Генерируем координаты сетки
+        lat = LAT_MIN
+        while lat < LAT_MAX:
+            lon = LON_MIN
+            while lon < LON_MAX:
+                # Формируем URL для поиска парковок в этой зоне
+                url = (f"https://yandex.ru/maps/2/saint-petersburg/search/парковки/"
+                       f"?l=carparks&ll={lon:.6f}%2C{lat:.6f}&z=14")
+
+                zones.append({
+                    "name": f"Автозона {zone_counter}",
+                    "url": url,
+                    "coords": (lon, lat)  # Для отладки
+                })
+
+                zone_counter += 1
+                lon += LON_STEP
+            lat += LAT_STEP
+
+        print(f"✅ Сгенерировано {len(zones)} зон для парсинга (z=14)")
+        print(f"📐 Шаг сетки: {LON_STEP:.3f}° (долгота) × {LAT_STEP:.3f}° (широта)")
+        print(f"📍 Охватываемая область: {LAT_MIN}-{LAT_MAX}°N, {LON_MIN}-{LON_MAX}°E")
+
+        return zones
+
     async def _scroll_and_collect_urls(self, page):
-        """Скроллинг и сбор ссылок (специфично для Яндекс)"""
-        print("Начинаем скроллинг для загрузки всех парковок...")
+        """Скроллинг и сбор ссылок для конкретной области"""
+        max_scrolls = 30
+        no_new_count = 0
+        previous_count = len(self.all_urls)
 
-        max_scroll_attempts = 100
-        consecutive_no_new = 0
-        total_new_urls = 0
+        for scroll_num in range(1, max_scrolls + 1):
+            print(f"   📍 Скролл {scroll_num}/{max_scrolls}")
 
-        for attempt in range(1, max_scroll_attempts + 1):
-            print(f"\n   🔄 Попытка скроллинга {attempt}/{max_scroll_attempts}")
+            # Сохраняем текущее количество
+            current_count_before = len(self.all_urls)
 
-            before_scroll_count = len(self.all_urls)
-
-            # Скроллинг для Яндекс
+            # Выполняем скроллинг для Яндекс
             await self._yandex_specific_scroll(page)
+            await asyncio.sleep(random.uniform(1.5, 2.5))
 
-            # Ждем загрузки
-            await asyncio.sleep(random.uniform(2, 3))
-
-            # Получаем обновленный HTML и извлекаем URL
+            # Собираем ссылки
             html_content = await page.evaluate("document.documentElement.outerHTML")
-            new_urls_count_before = len(self.all_urls)
+            urls_before = len(self.all_urls)
             self._extract_urls_from_html(html_content)
-            new_urls_added = len(self.all_urls) - new_urls_count_before
+            new_urls = len(self.all_urls) - urls_before
 
-            print(f"   📊 URL до: {before_scroll_count}, добавлено: {new_urls_added}, всего: {len(self.all_urls)}")
-
-            if new_urls_added > 0:
-                consecutive_no_new = 0
-                total_new_urls += new_urls_added
+            if new_urls > 0:
+                print(f"   📥 Новых парковок: {new_urls}")
+                no_new_count = 0
             else:
-                consecutive_no_new += 1
-                if consecutive_no_new >= self.max_consecutive_no_new:
-                    print(f"   🏁 Прекращаем скроллинг - {self.max_consecutive_no_new} раза подряд нет новых URL")
+                no_new_count += 1
+                print(f"   📭 Новых парковок нет ({no_new_count}/3)")
+
+                if no_new_count >= 3:
+                    print("   🏁 Завершаем скроллинг этой области")
                     break
 
-            await asyncio.sleep(random.uniform(0.5, 1.5))
+            # Если количество ссылок не меняется 3 раза подряд - выходим
+            if len(self.all_urls) == previous_count:
+                no_new_count += 1
+            else:
+                no_new_count = 0
 
-        print(f"\n✅ Скроллинг завершен")
-        print(f"📊 Всего добавлено новых URL: {total_new_urls}")
+            previous_count = len(self.all_urls)
+
+            # Короткая пауза
+            await asyncio.sleep(random.uniform(0.5, 1))
 
     async def _yandex_specific_scroll(self, page):
         """Специфичный скроллинг для Яндекс.Карт"""
@@ -159,8 +228,40 @@ class YandexParser(BaseParser):
         except Exception as e:
             print(f"   ⚠ Ошибка скроллинга: {e}")
 
+    def _normalize_url(self, url: str) -> str:
+        """Нормализация URL - оставляем только базовую ссылку на парковку"""
+        if not url:
+            return ""
+
+        # Список вкладок, которые нужно обрезать
+        tabs_to_remove = ['/reviews', '/photos', '/gallery', '/menu']
+
+        # Добавляем домен если нужно
+        if url.startswith('//'):
+            url = f"https:{url}"
+        elif url.startswith('/'):
+            url = f"https://yandex.ru{url}"
+        elif not url.startswith('http'):
+            return ""
+
+        # Удаляем параметры запроса и якоря
+        url = url.split('?')[0].split('#')[0].strip()
+
+        # Обрезаем вкладки (reviews, photos, gallery, menu)
+        for tab in tabs_to_remove:
+            if tab in url:
+                # Находим позицию вкладки и обрезаем до неё
+                tab_index = url.find(tab)
+                if tab_index != -1:
+                    url = url[:tab_index]
+
+        # Удаляем конечные слеши
+        url = url.rstrip('/')
+
+        return url
+
     def _extract_urls_from_html(self, html_content: str):
-        """Извлечение ссылок на парковки из HTML (специфично для Яндекс)"""
+        """Извлечение ссылок на парковки из HTML"""
         try:
             urls_before = len(self.all_urls)
 
@@ -170,10 +271,11 @@ class YandexParser(BaseParser):
 
             for link in all_link_matches:
                 full_url = f"https://yandex.ru{link}"
-                clean_url = full_url.split('?')[0].split('#')[0]
-                # Фильтруем системные ссылки
-                if not any(exclude in clean_url.lower() for exclude in ['/reviews/', '/photos/', '/gallery/']):
-                    self.all_urls.add(clean_url)
+                clean_url = self._normalize_url(full_url)
+                if clean_url:
+                    # Фильтруем системные ссылки
+                    if not any(exclude in clean_url.lower() for exclude in ['/reviews/', '/photos/', '/gallery/', '/menu/']):
+                        self.all_urls.add(clean_url)
 
             # Ищем в карточках
             snippet_pattern = r'<li[^>]*class="[^"]*search-snippet-view[^"]*"[^>]*>.*?</li>'
@@ -184,18 +286,55 @@ class YandexParser(BaseParser):
                 if link_match:
                     link = link_match.group(1)
                     full_url = f"https://yandex.ru{link}"
-                    clean_url = full_url.split('?')[0].split('#')[0]
-                    if not any(exclude in clean_url.lower() for exclude in ['/reviews/', '/photos/', '/gallery/']):
+                    clean_url = self._normalize_url(full_url)
+                    if clean_url and not any(exclude in clean_url.lower() for exclude in ['/reviews/', '/photos/', '/gallery/', '/menu/']):
                         self.all_urls.add(clean_url)
 
             new_urls = len(self.all_urls) - urls_before
             if new_urls > 0:
-                print(f"   ✅ Извлечено {new_urls} новых URL")
+                print(f"   📥 Извлечено {new_urls} новых URL")
 
         except Exception as e:
             print(f"❌ Ошибка извлечения URL: {e}")
 
-    # ВАЖНО: переименован метод с _extract_parking_data на _extract_page_data
+    async def parse_parking_page(self, url: str) -> Dict[str, Any]:
+        """Парсинг страницы парковки"""
+        try:
+            print(f"      📖 Открываем страницу парковки...")
+            page = await self.browser.get(url)
+            await asyncio.sleep(random.uniform(3, 4))
+
+            # Получаем HTML
+            html_content = await page.evaluate("document.documentElement.outerHTML")
+            soup = BeautifulSoup(html_content, 'html.parser')
+
+            # Парсим данные
+            data = self._extract_page_data(url, soup, html_content)
+
+            # Проверяем, что парковка в Санкт-Петербурге
+            address = data.get('Адрес', '')
+            if address:
+                address_lower = address.lower()
+                spb_patterns = [
+                    'санкт-петербург',
+                    'спб',
+                    'г.санкт-петербург',
+                    'г. спб',
+                    'ленинград',
+                    'г.ленинград'
+                ]
+
+                is_spb = any(pattern in address_lower for pattern in spb_patterns)
+                if not is_spb:
+                    print(f"      🚫 Пропускаем парковку (не из Санкт-Петербурга): {address}")
+                    return None
+
+            return data if data else None
+
+        except Exception as e:
+            print(f"      ❌ Ошибка парсинга: {e}")
+            return None
+
     def _extract_page_data(self, url: str, soup: BeautifulSoup, html: str) -> Dict[str, Any]:
         """Извлечение данных со страницы парковки (специфично для Яндекс)"""
         data = {
@@ -431,3 +570,100 @@ class YandexParser(BaseParser):
             type_info.append('бизнес-центр')
 
         return ", ".join(type_info) if type_info else "неизвестно"
+
+    def _remove_duplicates(self):
+        """Удаление дубликатов по уникальному ID"""
+        if not self.results:
+            return
+
+        unique_results = []
+        seen = set()
+
+        for item in self.results:
+            # Создаем ключ на основе нормализованной ссылки
+            url = item.get('Ссылка', '').lower().strip()
+
+            if url:
+                # Извлекаем уникальный ID из URL
+                # Паттерн для поиска ID: /org/название/ID/
+                match = re.search(r'/(\d+)(?:/|$)', url)
+                if match:
+                    unique_id = match.group(1)
+                    if unique_id not in seen:
+                        seen.add(unique_id)
+                        unique_results.append(item)
+                elif url not in seen:
+                    seen.add(url)
+                    unique_results.append(item)
+            else:
+                # Если нет URL, используем название и адрес
+                name = item.get('Название парковки', '').lower().strip()
+                address = item.get('Адрес', '').lower().strip()
+
+                if name and address:
+                    key = f"{name}|{address}"
+                    if key not in seen:
+                        seen.add(key)
+                        unique_results.append(item)
+                elif name:
+                    if name not in seen:
+                        seen.add(name)
+                        unique_results.append(item)
+                elif address:
+                    if address not in seen:
+                        seen.add(address)
+                        unique_results.append(item)
+                else:
+                    unique_results.append(item)
+
+        removed = len(self.results) - len(unique_results)
+        if removed > 0:
+            print(f"🗑 Удалено дубликатов: {removed}")
+
+        self.results = unique_results
+
+    def _print_final_stats(self, total_urls: int):
+        """Вывод статистики сбора"""
+        print("\n" + "=" * 80)
+        print("📊 СТАТИСТИКА СБОРА")
+        print("=" * 80)
+
+        elapsed_time = time.time() - self.start_time
+        minutes = int(elapsed_time // 60)
+        seconds = int(elapsed_time % 60)
+
+        print(f"⏱ Время выполнения: {minutes} мин {seconds} сек")
+        print(f"🔗 Всего найдено ссылок: {total_urls}")
+        print(f"✅ Успешно спарсено: {len(self.results)}")
+
+        # Статистика по данным
+        phones_count = sum(1 for r in self.results if r.get('Телефон'))
+        sites_count = sum(1 for r in self.results if r.get('Сайт'))
+        coords_count = sum(1 for r in self.results if r.get('Координаты'))
+        prices_count = sum(1 for r in self.results if r.get('Цены'))
+
+        print(f"📞 Парковок с телефоном: {phones_count}")
+        print(f"🌐 Парковок с сайтом: {sites_count}")
+        print(f"📍 Парковок с координатами: {coords_count}")
+        print(f"💰 Парковок с ценами: {prices_count}")
+
+        # Типы парковок
+        types = {}
+        for r in self.results:
+            parking_type = r.get('Тип парковки', 'неизвестно')
+            types[parking_type] = types.get(parking_type, 0) + 1
+
+        print("\n🏢 ТИПЫ ПАРКОВОК:")
+        for type_name, count in sorted(types.items(), key=lambda x: x[1], reverse=True):
+            print(f"   {type_name}: {count}")
+
+        print("\n" + "=" * 80)
+
+    def _clean_text(self, text: str) -> str:
+        """Очистка текста от лишних пробелов и символов"""
+        if not text:
+            return ""
+        # Удаляем лишние пробелы, переносы строк
+        text = re.sub(r'\s+', ' ', text)
+        text = text.strip()
+        return text
