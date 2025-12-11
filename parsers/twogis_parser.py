@@ -5,6 +5,7 @@ import hashlib
 import time
 from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
+from urllib.parse import urlparse, parse_qs, urlencode
 
 from bs4 import BeautifulSoup
 import nodriver
@@ -13,7 +14,7 @@ from .base_parser import BaseParser
 
 
 class TwoGisParser(BaseParser):
-    """Парсер 2ГИС."""
+    """Парсер 2ГИС с разбиением на зоны."""
 
     def __init__(self, headless: bool = True):
         super().__init__(headless)
@@ -29,9 +30,9 @@ class TwoGisParser(BaseParser):
         return "2gis"
 
     async def parse(self, max_pages: int = 30) -> List[Dict[str, Any]]:
-        """Основной метод парсинга 2ГИС"""
+        """Основной метод парсинга 2ГИС с разбиением на зоны"""
         print("=" * 60)
-        print("🚀 ЗАПУСК ПАРСЕРА 2ГИС")
+        print("🚀 ЗАПУСК ПАРСЕРА 2ГИС (ЗОНИРОВАННЫЙ)")
         print("=" * 60)
 
         self.start_time = time.time()
@@ -41,26 +42,55 @@ class TwoGisParser(BaseParser):
             return []
 
         try:
-            # 1. Собираем ссылки
-            print(f"\n📄 ЭТАП 1: СБОР ВСЕХ ССЫЛОК НА ПАРКОВКИ")
+            # 1. Генерируем зоны для Санкт-Петербурга
+            print(f"\n🎯 ГЕНЕРАЦИЯ ЗОН ДЛЯ САНКТ-ПЕТЕРБУРГА")
             print("-" * 50)
 
-            await self._collect_all_parking_urls()
+            search_areas = self.generate_grid_z14()
+            print(f"✅ Сгенерировано зон: {len(search_areas)}")
+
+            # 2. Парсим все зоны города
+            print(f"\n📄 ЭТАП 1: СБОР ВСЕХ ССЫЛОК НА ПАРКОВКИ ПО ЗОНАМ")
+            print("-" * 50)
+
+            for i, area in enumerate(search_areas, 1):
+                urls_before = len(self.all_urls)
+
+                print(f"\n📍 Зона {i}/{len(search_areas)}: {area['name']}")
+                print(f"   Координаты: {area['coords'][1]:.4f}°N, {area['coords'][0]:.4f}°E")
+                print(f"   Масштаб: z={area['zoom']}")
+                print(f"   URL: {area['url']}")
+
+                # Открываем страницу зоны
+                await self._collect_urls_from_zone(
+                    area['url'],
+                    area['name'],
+                    area['coords'],
+                    area['zoom']
+                )
+
+                new_urls = len(self.all_urls) - urls_before
+                print(f"✅ В зоне найдено парковок: {new_urls}")
+                print(f"📊 Всего собрано ссылок: {len(self.all_urls)}")
+
+                # Пауза между зонами
+                if i < len(search_areas):
+                    await asyncio.sleep(random.uniform(5, 8))
 
             if not self.all_urls:
                 print("❌ Не удалось собрать ссылки на парковки")
                 return []
 
-            print(f"\n✅ Собрано уникальных ссылок на парковки: {len(self.all_urls)}")
+            print(f"\n✅ Всего собрано уникальных ссылок: {len(self.all_urls)}")
 
-            # 2. Парсим все собранные ссылки
+            # 3. Парсим все собранные парковки
             print("\n🏢 ЭТАП 2: ПАРСИНГ ВСЕХ СОБРАННЫХ ПАРКОВОК")
             print("-" * 50)
 
             urls_list = list(self.all_urls)
             await self._parse_all_parking_pages(urls_list)
 
-            # 3. Удаляем дубликаты и выводим статистику
+            # 4. Удаляем дубликаты и выводим статистику
             self._remove_duplicates()
             self._print_final_stats(len(self.all_urls))
 
@@ -74,58 +104,173 @@ class TwoGisParser(BaseParser):
         finally:
             await self.close()
 
-    async def _collect_all_parking_urls(self) -> bool:
-        """Сбор URL парковок (специфично для 2ГИС)"""
-        print("🔍 Начинаем сбор ссылок...")
+    def generate_grid_z14(self) -> List[Dict[str, Any]]:
+        """
+        Автоматически генерирует сетку зон для парсинга (z=14).
+        Возвращает список URL для поиска, покрывающих весь Санкт-Петербург.
+        """
+        # Границы Санкт-Петербурга для 2GIS
+        LAT_MIN, LAT_MAX = 59.85, 60.05  # Немного расширяем для полного охвата
+        LON_MIN, LON_MAX = 30.15, 30.70  # Запад-Восток
 
-        # Начинаем с первой страницы
-        start_url = "https://2gis.ru/spb/search/parking"
-        print(f"📍 Начальная страница: {start_url}")
+        # Шаг сетки для z=14
+        LAT_STEP = 0.04  # ~4.4 км
+        LON_STEP = 0.06  # ~3.8 км на широте СПб
+        ZOOM = 14  # Фиксированный масштаб
 
-        tab = await self.browser.get(start_url)
-        await asyncio.sleep(random.uniform(5, 7))
+        zones = []
+        zone_counter = 1
 
-        # Собираем ссылки с первой страницы
-        print("   📥 Собираем ссылки с первой страницы...")
-        initial_urls = await self._get_urls_from_current_page(tab)
-        if initial_urls:
-            self.all_urls.update(initial_urls)
-            print(f"   📊 Первая страница: {len(initial_urls)} URL")
-        else:
-            print("   ⚠ Не удалось получить ссылки с первой страницы")
+        # Генерируем координаты сетки
+        lat = LAT_MIN
+        while lat < LAT_MAX:
+            lon = LON_MIN
+            while lon < LON_MAX:
+                # Формируем URL для поиска парковок в этой зоне
+                # 2GIS использует параметры m для позиционирования: lon,lat,zoom
+                url = f"https://2gis.ru/spb/search/parking/?m={lon:.6f}%2C{lat:.6f}%2F{ZOOM}"
+
+                zones.append({
+                    "name": f"Зона {zone_counter}",
+                    "url": url,
+                    "coords": (lon, lat),
+                    "zoom": ZOOM
+                })
+
+                zone_counter += 1
+                lon += LON_STEP
+            lat += LAT_STEP
+
+        print(f"✅ Сгенерировано {len(zones)} зон для парсинга (z={ZOOM})")
+        print(f"📐 Шаг сетки: {LON_STEP:.3f}° (долгота) × {LAT_STEP:.3f}° (широта)")
+        print(f"📍 Охватываемая область: {LAT_MIN}-{LAT_MAX}°N, {LON_MIN}-{LON_MAX}°E")
+
+        return zones
+
+    async def _collect_urls_from_zone(self, zone_url: str, zone_name: str, coords: tuple, zoom: int) -> bool:
+        """Сбор URL парковок из конкретной зоны"""
+        try:
+            print(f"   🔍 Начинаем сбор ссылок в зоне: {zone_name}")
+
+            # Открываем страницу зоны
+            tab = await self.browser.get(zone_url)
+            await asyncio.sleep(random.uniform(4, 6))
+
+            # Кликаем по поисковой выдаче, если есть
+            await self._click_search_results_if_needed(tab)
+
+            # Собираем ссылки с первой страницы
+            print("   📥 Собираем ссылки с первой страницы...")
+            initial_urls = await self._get_urls_from_current_page(tab)
+            if initial_urls:
+                self.all_urls.update(initial_urls)
+                print(f"   📊 Первая страница: {len(initial_urls)} URL")
+            else:
+                print("   ⚠ Не удалось получить ссылки с первой страницы")
+
+            # Прокручиваем страницу
+            print("   📜 Начинаем прокрутку страницы...")
+            await self._scroll_2gis_to_bottom(tab)
+
+            # Собираем ВСЕ URL после прокрутки
+            current_urls = await self._get_urls_from_current_page(tab)
+            if current_urls:
+                previous_count = len(self.all_urls)
+                self.all_urls.update(current_urls)
+                new_urls = len(self.all_urls) - previous_count
+                print(f"   📎 Всего URL после прокрутки: {len(self.all_urls)} (+{new_urls} новых)")
+
+            # Пробуем найти кнопку пагинации (передаем параметры зоны)
+            print("   🔍 Пробуем найти кнопку пагинации после прокрутки...")
+            await self._try_find_2gis_pagination_after_scroll(
+                tab,
+                coords,
+                zoom,
+                current_page=1
+            )
+
+            print(f"   ✅ Сбор ссылок в зоне {zone_name} завершен")
+            return True
+
+        except Exception as e:
+            print(f"   ❌ Ошибка сбора в зоне {zone_name}: {str(e)[:100]}")
             return False
 
-        # Прокручиваем страницу
-        print("   📜 Начинаем прокрутку страницы...")
-        await self._scroll_2gis_to_bottom(tab)
+    async def _click_search_results_if_needed(self, tab):
+        """Кликает по результатам поиска, если они есть"""
+        try:
+            # Ждем загрузки результатов
+            await asyncio.sleep(2)
 
-        # Собираем ВСЕ URL после прокрутки
-        current_urls = await self._get_urls_from_current_page(tab)
-        if current_urls:
-            previous_count = len(self.all_urls)
-            self.all_urls.update(current_urls)
-            new_urls = len(self.all_urls) - previous_count
-            print(f"      📎 Всего URL после прокрутки: {len(self.all_urls)} (+{new_urls} новых)")
+            # Пробуем найти кнопку или элемент с результатами
+            selectors = [
+                '.searchResults',
+                '.listContainer',
+                '.searchResults__list',
+                '.searchResults__container',
+                '[data-qa="search-results"]',
+                '.searchTab__content'
+            ]
 
-        # Пробуем найти кнопку пагинации
-        print("      🔍 Пробуем найти кнопку пагинации после прокрутки...")
-        await self._try_find_2gis_pagination_after_scroll(tab)
+            for selector in selectors:
+                element = await tab.query_selector(selector)
+                if element:
+                    print("   🖱 Найден контейнер результатов, кликаем...")
+                    await element.click()
+                    await asyncio.sleep(2)
+                    break
 
-        print(f"\n✅ Сбор ссылок завершен")
-        print(f"📊 Итог: {len(self.all_urls)} уникальных URL")
-        return len(self.all_urls) > 0
+            # Также пробуем кликнуть по первой карточке
+            first_card = await tab.query_selector('.minicard')
+            if first_card:
+                await first_card.click()
+                await asyncio.sleep(1)
+
+        except Exception as e:
+            print(f"   ⚠ Не удалось кликнуть по результатам: {str(e)[:50]}")
 
     async def _scroll_2gis_to_bottom(self, tab):
         """Прокручивает ВСЕ скроллируемые контейнеры на странице 2ГИС"""
         print("   📜 СКРОЛЛИМ ВСЕ КОНТЕЙНЕРЫ...")
 
         try:
-            # 1. Считаем сколько контейнеров
+            # 1. Сначала пробуем прокрутить основной контейнер с результатами
+            await tab.evaluate("""
+                (function() {
+                    const mainContainers = [
+                        '.searchResults__list',
+                        '.listContainer',
+                        '.searchResults__container',
+                        '.scroll__container',
+                        '[data-scroll]'
+                    ];
+
+                    for (const selector of mainContainers) {
+                        const container = document.querySelector(selector);
+                        if (container && container.scrollHeight > container.clientHeight) {
+                            container.scrollTop = container.scrollHeight;
+                            return { scrolled: true, selector: selector };
+                        }
+                    }
+                    return { scrolled: false };
+                })()
+            """)
+            await asyncio.sleep(random.uniform(1, 2))
+
+            # 2. Прокручиваем окно браузера
+            await tab.evaluate("""
+                window.scrollBy({
+                    top: 800,
+                    behavior: 'smooth'
+                });
+            """)
+            await asyncio.sleep(random.uniform(1, 2))
+
+            # 3. Прокручиваем все скроллируемые контейнеры
             container_count = await tab.evaluate("""
                 document.querySelectorAll('[data-scroll], [tabindex], [overflow="auto"], [overflow="scroll"]').length
             """)
 
-            # 2. Прокручиваем КАЖДЫЙ контейнер
             for i in range(container_count):
                 await tab.evaluate(f"""
                     (function() {{
@@ -138,15 +283,15 @@ class TwoGisParser(BaseParser):
                         }}
                     }})()
                 """)
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
 
             await asyncio.sleep(random.uniform(2, 3))
 
         except Exception as e:
-            print(f"      ❌ Ошибка: {str(e)[:100]}")
+            print(f"   ❌ Ошибка скроллинга: {str(e)[:100]}")
 
-    async def _try_find_2gis_pagination_after_scroll(self, tab, current_page: int = 1):
-        """Попытка найти кнопки пагинации после прокрутки (2ГИС)"""
+    async def _try_find_2gis_pagination_after_scroll(self, tab, coords: tuple, zoom: int, current_page: int = 1):
+        """Попытка найти кнопки пагинации после прокрутки с сохранением параметров зоны"""
         try:
             html = await tab.get_content()
             soup = BeautifulSoup(html, 'lxml')
@@ -157,37 +302,129 @@ class TwoGisParser(BaseParser):
             # Ищем ссылку на следующую страницу
             for link in soup.find_all('a', href=True):
                 href = link['href']
-                match = re.search(r'/page/(\d+)', href)
-                if match:
-                    page_num = int(match.group(1))
-                    if page_num == next_page_num:
-                        print(f"      🖱 Переходим на страницу {next_page_num}")
 
-                        selector = f'a[href*="/page/{next_page_num}"]'
-                        element = await tab.query_selector(selector)
+                # Паттерны пагинации 2GIS
+                patterns = [
+                    r'/page/(\d+)',
+                    r'page=(\d+)',
+                    r'pagination=(\d+)'
+                ]
 
-                        if element:
-                            await element.click()
+                for pattern in patterns:
+                    match = re.search(pattern, href)
+                    if match:
+                        page_num = int(match.group(1))
+                        if page_num == next_page_num:
+                            print(f"   🖱 Переходим на страницу {next_page_num}")
+
+                            # ВАЖНО: Формируем URL для следующей страницы с ПАРАМЕТРАМИ ЗОНЫ
+                            lon, lat = coords
+                            base_url = f"https://2gis.ru/spb/search/parking/"
+
+                            # Добавляем параметры зоны (координаты и масштаб)
+                            params = {
+                                'm': f"{lon:.6f},{lat:.6f}/{zoom}"
+                            }
+
+                            # Определяем формат пагинации и добавляем номер страницы
+                            if '/page/' in href:
+                                # Формат: /page/2/
+                                page_url = f"{base_url}page/{next_page_num}/?{urlencode(params)}"
+                            else:
+                                # Формат: ?page=2
+                                params['page'] = next_page_num
+                                page_url = f"{base_url}?{urlencode(params)}"
+
+                            print(f"   📍 URL с параметрами зоны: {page_url}")
+
+                            # Переходим на следующую страницу
+                            await tab.get(page_url)
                             await asyncio.sleep(random.uniform(4, 6))
 
+                            # Прокручиваем новую страницу
                             await self._scroll_2gis_to_bottom(tab)
 
+                            # Собираем URL с новой страницы
                             urls_page = await self._get_urls_from_current_page(tab)
                             if urls_page:
                                 before = len(self.all_urls)
                                 self.all_urls.update(urls_page)
                                 new_count = len(self.all_urls) - before
-                                print(f"      📊 +{new_count} новых URL")
+                                print(f"   📊 +{new_count} новых URL")
 
-                            await self._try_find_2gis_pagination_after_scroll(tab, next_page_num)
+                            # Рекурсивно ищем следующую страницу
+                            await self._try_find_2gis_pagination_after_scroll(
+                                tab,
+                                coords,
+                                zoom,
+                                next_page_num
+                            )
                             found_next_page = True
                             break
 
+                if found_next_page:
+                    break
+
             if not found_next_page:
-                print(f"      ⚠ Нет больше страниц")
+                # Также проверяем кнопки "Дальше" или "Следующая"
+                next_buttons = soup.find_all(['button', 'a'], string=re.compile(r'дальше|следующ|next', re.I))
+
+                for button in next_buttons:
+                    print(f"   🖱 Найдена кнопка 'Дальше', пробуем перейти на страницу {next_page_num}")
+
+                    # Формируем URL для следующей страницы с параметрами зоны
+                    lon, lat = coords
+                    base_url = f"https://2gis.ru/spb/search/parking/"
+
+                    # Пробуем разные форматы
+                    formats_to_try = [
+                        f"{base_url}page/{next_page_num}/?m={lon:.6f}%2C{lat:.6f}%2F{zoom}",
+                        f"{base_url}?page={next_page_num}&m={lon:.6f}%2C{lat:.6f}%2F{zoom}"
+                    ]
+
+                    for page_url in formats_to_try:
+                        try:
+                            await tab.get(page_url)
+                            await asyncio.sleep(random.uniform(4, 6))
+
+                            # Проверяем, загрузилась ли страница
+                            current_url = await tab.evaluate("window.location.href")
+                            if "parking" in current_url:
+                                print(f"   ✅ Успешно перешли на страницу {next_page_num}")
+
+                                # Прокручиваем новую страницу
+                                await self._scroll_2gis_to_bottom(tab)
+
+                                # Собираем URL с новой страницы
+                                urls_page = await self._get_urls_from_current_page(tab)
+                                if urls_page:
+                                    before = len(self.all_urls)
+                                    self.all_urls.update(urls_page)
+                                    new_count = len(self.all_urls) - before
+                                    print(f"   📊 +{new_count} новых URL")
+
+                                # Рекурсивно ищем следующую страницу
+                                await self._try_find_2gis_pagination_after_scroll(
+                                    tab,
+                                    coords,
+                                    zoom,
+                                    next_page_num
+                                )
+                                found_next_page = True
+                                break
+
+                        except Exception as e:
+                            print(f"   ⚠ Ошибка при переходе по URL {page_url}: {str(e)[:50]}")
+                            continue
+
+                    if found_next_page:
+                        break
+
+            if not found_next_page:
+                print(f"   ⚠ Нет больше страниц в этой зоне (достигнута страница {current_page})")
 
         except Exception as e:
-            print(f"      ❌ Ошибка: {str(e)[:60]}")
+            print(f"   ❌ Ошибка пагинации: {str(e)[:60]}")
 
     async def _get_urls_from_current_page(self, tab) -> Set[str]:
         """Получение URL парковок с текущей страницы (2ГИС)"""
@@ -244,6 +481,26 @@ class TwoGisParser(BaseParser):
                 if url not in urls:
                     urls.append(url)
 
+        # Ищем в мини-карточках
+        minicards = soup.select('.minicard')
+        for card in minicards:
+            link = card.select_one('a[href*="/firm/"]')
+            if link:
+                href = link.get('href', '')
+                if href:
+                    if href.startswith('//'):
+                        full_url = f"https:{href}"
+                    elif href.startswith('/'):
+                        full_url = f"https://2gis.ru{href}"
+                    elif href.startswith('http'):
+                        full_url = href
+                    else:
+                        continue
+
+                    clean_url = self._clean_2gis_url(full_url)
+                    if clean_url and clean_url not in urls:
+                        urls.append(clean_url)
+
         return list(set(urls))
 
     def _is_valid_2gis_url(self, url: str) -> bool:
@@ -260,7 +517,9 @@ class TwoGisParser(BaseParser):
             '/contacts',
             '/search/',
             'tab=',
-            '#'
+            '#',
+            'reviewTab',
+            'photoTab'
         ]
 
         for pattern in exclude_patterns:
@@ -525,6 +784,7 @@ class TwoGisParser(BaseParser):
             r'@([\d\.]+),([\d\.]+)',
             r'll=([\d\.]+)%2C([\d\.]+)',
             r'/([\d\.]+)%2C([\d\.]+)/',
+            r'm=([\d\.]+)%2C([\d\.]+)'
         ]
 
         for pattern in patterns:
@@ -561,3 +821,40 @@ class TwoGisParser(BaseParser):
 
         url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
         return f"2gis_{url_hash}"
+
+    def _print_final_stats(self, total_urls: int):
+        """Вывод статистики сбора"""
+        print("\n" + "=" * 80)
+        print("📊 СТАТИСТИКА СБОРА 2ГИС")
+        print("=" * 80)
+
+        elapsed_time = time.time() - self.start_time
+        minutes = int(elapsed_time // 60)
+        seconds = int(elapsed_time % 60)
+
+        print(f"⏱ Время выполнения: {minutes} мин {seconds} сек")
+        print(f"🔗 Всего найдено ссылок: {total_urls}")
+        print(f"✅ Успешно спарсено: {len(self.results)}")
+
+        # Статистика по данным
+        phones_count = sum(1 for r in self.results if r.get('Телефон'))
+        sites_count = sum(1 for r in self.results if r.get('Сайт'))
+        coords_count = sum(1 for r in self.results if r.get('Координаты'))
+        prices_count = sum(1 for r in self.results if r.get('Цены'))
+
+        print(f"📞 Парковок с телефоном: {phones_count}")
+        print(f"🌐 Парковок с сайтом: {sites_count}")
+        print(f"📍 Парковок с координатами: {coords_count}")
+        print(f"💰 Парковок с ценами: {prices_count}")
+
+        # Типы парковок
+        types = {}
+        for r in self.results:
+            parking_type = r.get('Тип парковки', 'неизвестно')
+            types[parking_type] = types.get(parking_type, 0) + 1
+
+        print("\n🏢 ТИПЫ ПАРКОВОК:")
+        for type_name, count in sorted(types.items(), key=lambda x: x[1], reverse=True):
+            print(f"   {type_name}: {count}")
+
+        print("\n" + "=" * 80)

@@ -2,7 +2,7 @@ import asyncio
 import random
 import re
 import time
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional
 from bs4 import BeautifulSoup
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
@@ -20,6 +20,7 @@ class YandexParser(BaseParser):
     async def parse(self) -> List[Dict[str, Any]]:
         """Основной метод парсинга Яндекс Карт"""
         print("=" * 80)
+
         print("🚀 ПАРСЕР ЯНДЕКС КАРТ - САНКТ-ПЕТЕРБУРГ")
         print("=" * 80)
 
@@ -113,8 +114,8 @@ class YandexParser(BaseParser):
         # 1. Определяем географические границы Санкт-Петербурга
         # (широта lat, долгота lon)
         # Эти значения можно немного расширить для полного охвата
-        LAT_MIN, LAT_MAX = 59.80, 60.05  # Север-Юг
-        LON_MIN, LON_MAX = 29.60, 30.70  # Запад-Восток
+        LAT_MIN, LAT_MAX = 59.90, 60.05  # Север-Юг
+        LON_MIN, LON_MAX = 30.20, 30.70  # Запад-Восток
 
         # 2. Рассчитываем шаг сетки для z=14
         # При z=14 sspn ~0.04-0.05 градуса, делаем шаг немного меньше для перекрытия
